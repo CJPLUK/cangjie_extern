@@ -541,9 +541,8 @@ When `Extern<T>` is expected in a context that allows implicit conversion (liste
 | Default parameter value | parameter type | `func f(p!: Extern<T> = exp) {}` |
 | Array or tuple literal element | element type of the literal | `let arr: Array<Extern<T>> = [exp1, exp2]`, `let tpl: (Extern<T>, Int64) = (exp, 1)` |
 | Branch of `if`, `match` or `try`, including `catch` and effect handlers | expected type of the `if`, `match` or `try` | `let x: Extern<T> = if (c) { exp1 } else { exp2 }` |
-| Body of `synchronized` | expected type of the `synchronized` | `let x: Extern<T> = synchronized (m) { exp }` |
 
-The last three rows apply recursively, e.g. `[[1]]` is accepted as `Array<Array<Extern<T>>>`. Expressions made of blocks of code, i.e. blocks, parenthesized expressions, `if`, `match`, `try`, `synchronized` and loops, are never converted as a whole: only the values they produce are. So loops, an `if` without `else`, a `try` with resources and a block ending with a declaration, whose type is `Unit`, are type errors as for any other expected type. Other expressions, including literals, lambdas and `spawn`, are converted as a whole when they are themselves expected to be `Extern<T>`.
+The last two rows apply recursively, e.g. `[[1]]` is accepted as `Array<Array<Extern<T>>>`. Blocks, parenthesized expressions, `if`, `match`, `try` and loops are never converted as a whole: only the values they produce are. So loops, an `if` without `else`, a `try` with resources and a block ending with a declaration, whose type is `Unit`, are type errors as for any other expected type. Other expressions, including literals, lambdas, `spawn` and `synchronized`, are converted as a whole when they are themselves expected to be `Extern<T>`. For `synchronized`, the conversion thus runs after the lock is released.
 
 In overload resolution, a candidate that needs no conversion of its arguments is preferred.
 
@@ -649,7 +648,8 @@ Each expression `exp: U` accepted by the [implicit conversion](#implicit-convers
 
 The conversion is applied where the type checker accepted `exp`:
 - for a literal, to its elements when the literal is expected to be `Array<Extern<T>>` or a tuple with `Extern<T>` components, and to the whole literal when it is expected to be `Extern<T>`: `let a: Extern<R> = [x, 12]`, with `x: Int64`, is desugared into `R.toExtern<Array<Int64>>([x, 12])`;
-- for an expression made of blocks of code, never to the whole expression but to the last expression of each block giving its value: each branch of an `if`, each case of a `match`, the try block, each `catch` and each effect handler of a `try`, and the body of `synchronized`;
+- for a block, a parenthesized expression, an `if`, a `match` or a `try`, never to the whole expression but to the expressions giving its value: the last expression of a block, each branch of an `if`, each case of a `match`, and the try block, each `catch` and each effect handler of a `try`;
+- for a `synchronized` expression, to the whole expression, so that the conversion runs after the lock is released;
 - for a function or lambda body, to its last expression.
 
 **Example 1**:
@@ -1134,7 +1134,7 @@ else:
 
 So the conversion applies wherever an expression is checked against `Extern<T>`: variable initializers, assignments, call arguments, `return`, function and lambda bodies, and default parameter values.
 
-`IsControlFlowExpr(node)` (file-local in `TypeChecker.cpp`) is true for the nodes made of blocks of code: `if`, `match`, `try`, `synchronized`, blocks, parenthesized expressions, and loops (`Node::IsLoopExpr`). These are checked as usual. The first six check the expressions giving their value against their own target, so the target `Extern<T>` reaches those values instead of converting the whole node; `synchronized` does so through the `try` it is desugared to. Loops check their type `Unit` against the target. A value of type `Unit` that doesn't come from a branch is therefore an error, as it is for any other target: a loop, an `if` without `else`, a `try` with resources, and a block ending with a declaration.
+`IsControlFlowExpr(node)` (file-local in `TypeChecker.cpp`) is true for `if`, `match`, `try`, blocks, parenthesized expressions, and loops (`Node::IsLoopExpr`). These are checked as usual. The first five check the expressions giving their value against their own target, so the target `Extern<T>` reaches those values instead of converting the whole node. Loops check their type `Unit` against the target. `synchronized` is not included, so that it is converted as a whole and the conversion runs after the lock is released. A value of type `Unit` that doesn't come from a branch is therefore an error, as it is for any other target: a loop, an `if` without `else`, a `try` with resources, and a block ending with a declaration.
 
 For a `try` with effect handlers, the try block and the handlers are lambdas checked against `() -> Extern<T>` and `(Cmd) -> Extern<T>`, so their values are converted like function bodies. `CreateSetHandler` in [EffectHandlers.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/799e9f6545cc8a83355c5d77e777f8f571215815...feature_extern_with_enum#diff-f3f9ed3b121abc1843d0e57504b5a5016d8f66d5151a90e59d5dee3cad575083) wraps a handler's value in a `try` and synthesizes its type; when the handled `try` has type `Extern<T>`, it gives that wrapper `Extern<T>` instead, as `EncloseTryLambda` does for the try block, so that `HandleValues` converts the value.
 
@@ -1144,7 +1144,7 @@ For a `try` with effect handlers, the try block and the handlers are lambdas che
 | `if (c) {e} else {"a"}` where `Extern<RT>` is expected, with `e: Extern<RT>` | on the else branch, on `"a"` |
 | `if (c) {1}` where `Extern<RT>` is expected (no else) | type error: the `if` has type `Unit` |
 | `while (c) {}` where `Extern<RT>` is expected | type error: the loop has type `Unit` |
-| `synchronized (m) {1}` where `Extern<RT>` is expected | on the last expression of the body |
+| `synchronized (m) {1}` where `Extern<RT>` is expected | on the whole `synchronized` expression, after the lock is released |
 | `try {perform Stop(); 1} handle (_: Stop) {"h"}` for `Extern<RT>` is expected | on the last expression of the try body and the last expression of the handler |
 | `[1, 2]` where `Extern<RT>` is expected | the whole literal |
 | `[1, "a"]` where `Array<Extern<RT>>` is expected | on each element of the array |
