@@ -644,13 +644,12 @@ At the desugaring stage the remaining operations `(U)e` are not ambiguous anymor
 
 ##### Implicit conversion to `Extern<T>` <span id="implicit-conversion-to-externt"></span>
 
-Each expression `exp: U` accepted by the [implicit conversion](#implicit-conversion) rules, where `U` is neither `Extern<T>` nor `Nothing`, is desugared into `T.toExtern<U>(exp)`. `exp` can be any expression, not only a literal: `let a: Array<Extern<R>> = [x, x + 1, f()]` converts each of the three elements.
+`exp: U` accepted by the [implicit conversion](#implicit-conversion) rules, with `U` neither `Extern<T>` nor `Nothing`, becomes `T.toExtern<U>(exp)`, applied to:
 
-The conversion is applied where the type checker accepted `exp`:
-- for a literal, to its elements when the literal is expected to be `Array<Extern<T>>` or a tuple with `Extern<T>` components, and to the whole literal when it is expected to be `Extern<T>`: `let a: Extern<R> = [x, 12]`, with `x: Int64`, is desugared into `R.toExtern<Array<Int64>>([x, 12])`;
-- for a block, a parenthesized expression, an `if`, a `match` or a `try`, never to the whole expression but to the expressions giving its value: the last expression of a block, each branch of an `if`, each case of a `match`, and the try block, each `catch` and each effect handler of a `try`;
-- for a `synchronized` expression, to the whole expression, so that the conversion runs after the lock is released;
-- for a function or lambda body, to its last expression.
+- array or tuple literal: each element, to its element type; the whole literal if expected `Extern<T>`;
+- block, `if`, `match`, `try`: the expressions giving its value, never the whole expression;
+- `synchronized`: the whole expression, after the lock is released;
+- function or lambda body: its last expression.
 
 **Example 1**:
 Assume `cjexp` has type `U` with `U != Extern<T>`. Then:
