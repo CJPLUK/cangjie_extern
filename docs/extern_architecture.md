@@ -734,6 +734,8 @@ DESUGAR(e1 op= e2) = // if e1 is e.f or e[i] with e of type Extern<T>
     T.eval(ExternCompoundAssignment(BUILD_TREE(e1), op, BUILD_TREE(e2)))
 DESUGAR(x op= e2) = // if x is a variable of type Extern<T>
     x = DESUGAR(x.op(e2))
+DESUGAR(exp.f op= e2) = // if exp has a non-Extern type and exp.f has type Extern<T>
+    exp.f = DESUGAR(exp`.f.op(e2))   // exp is evaluated once, exp` is a reference to exp
 DESUGAR(base) = // expressions without smaller subexpressions are preserved as they are
     base
 DESUGAR(exp) = // otherwise, for desugar sub expressions and preserve structure
@@ -854,14 +856,15 @@ DESUGAR(e1.a.b(e2.c, e3[0], n + 1)) =
     )
 ```
 
-Example 8:
+Example 9:
 
-For `e1: Extern<T>` and a variable `x: Extern<T>`.
+For a variable `x: Extern<T>` and a function `foo(): C`, where `C` has a field `f: Extern<T>`.
 
 ```cangjie
-DESUGAR(e1.a + 1)       = T.eval(ExternFunctionCall(ExternMemberAccess(ExternMemberAccess(e1, "a"), "+"), [1]))
-DESUGAR(-e1)            = T.eval(ExternFunctionCall(ExternMemberAccess(e1, "-"), []))
-DESUGAR(x += 1)         = x = T.eval(ExternFunctionCall(ExternMemberAccess(x, "+"), [1]))
+DESUGAR(x += 1)       =
+    x = T.eval(ExternFunctionCall(ExternMemberAccess(x, "+"), [1]))
+DESUGAR(foo().f *= 2) = 
+    foo().f = T.eval(ExternFunctionCall(ExternMemberAccess(foo`.f, "*"), [2]))   // foo() is evaluated once, foo` is a reference for foo()
 ```
 
 #### Other forms of assignment
@@ -1278,6 +1281,12 @@ visit(node):
 So the first dynamic node met on the way down is the outermost one:
 - in `e.a.b(1)`, the call is visited before `e.a.b` and `e.a`;
 - in `f(e.a)`, the call `f(...)` is a normal Cangjie call, so the walk goes on into its argument, and `e.a` is the outermost dynamic node there.
+
+##### Compound assignment of a Extern variable or field
+
+Sema rewrites `lhs op= v`, where `lhs: Extern<T>` is a variable `x` or a field `exp.f` with `exp` of a non-Extern type, into `lhs = lhs'.op(v)`, where the copy `lhs'` is mapped to `lhs` (`DesugarOperatorOverloadExpr`, as for any operator overloading). The pass needs nothing special for it: `lhs'.op(v)` is a dynamic call, and `lhs'` is copied into its tree as a leaf, keeping the mapping.
+
+CHIR translates `lhs` first. When `lhs` is a field, it evaluates the receiver once and records a reference to the field, which `lhs'` reuses, so `foo().f *= 2` calls `foo()` once. In ordinary Cangjie code `lhs'` is the receiver of `.op`, which accepts a reference. Here `lhs'` is an argument of a constructor of `Extern<T>`, so `TranslateTrivialArgWithNoSugar` in [TranslateCallExpr.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/799e9f6545cc8a83355c5d77e777f8f571215815...feature_extern_with_enum#diff-04e26a3b08dd5edcc57fbf04e82e545ee0fd9bbd62b96f42c5496c9458c5965e) loads the value of the field from it. A variable, a static field, or a field accessed through a package has nothing recorded, and is simply read again.
 
 ##### Building the tree
 
