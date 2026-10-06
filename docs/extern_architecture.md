@@ -1238,6 +1238,22 @@ for (auto& pkg : pkgs) {
 | 3 | `DesugarExtern` **(new)** | `let e: Extern<RT> = 1` | `let e: Extern<RT> = RT.toExtern<Int64>(1)` |
 | 4 | `AutoBoxing::AddOptionBox` | `let o: ?Int64 = 1` | `let o: ?Int64 = Some(1)` |
 
+`DesugarExtern` runs `ExternDesugaring::Run` ([ExternDesugaring.cpp](https://github.com/CJPLUK/cangjie_compiler/blob/feature_extern_with_enum/src/Sema/Desugar/AfterTypeCheck/ExternDesugaring.cpp)): a single pre-order walk of the package, rewriting nodes by setting their `desugarExpr`:
+
+```text
+visit(node):
+    if node is a dynamic expression:                  // section 5.2.3
+        node.desugarExpr = T.eval(tree of node)       // the tree holds clones of the children
+        visit(node.desugarExpr)                       // the clones get desugared here
+        skip the children of node                     // replaced by node.desugarExpr, never used
+    else:
+        if node expects Extern<T> for a value e: U:   // section 5.2.2
+            e.desugarExpr = T.toExtern<U>(e)
+        visit the children of node
+```
+
+`visit` is the pre-visit callback of the AST `Walker`, called on the package and on every node it reaches.
+
 #### 5.2.2. Implicit conversions
 
 The pass converts a value `e: U` wherever `Extern<T>` is expected in the following cases:
