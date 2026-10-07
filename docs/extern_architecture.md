@@ -1301,8 +1301,6 @@ So the first dynamic node met on the way down is the outermost one:
 
 Sema rewrites `lhs op= v`, where `lhs: Extern<T>` is a variable `x` or a field `exp.f` with `exp` of a non-Extern type, into `lhs = lhs'.op(v)`, where the copy `lhs'` is mapped to `lhs` (`DesugarOperatorOverloadExpr`, as for any operator overloading). The pass needs nothing special for it: `lhs'.op(v)` is a dynamic call, and `lhs'` is copied into its tree as a leaf, keeping the mapping.
 
-CHIR translates `lhs` first. When `lhs` is a field, it evaluates the receiver once and records a reference to the field, which `lhs'` reuses, so `foo().f *= 2` calls `foo()` once. In ordinary Cangjie code `lhs'` is the receiver of `.op`, which accepts a reference. Here `lhs'` is an argument of a constructor of `Extern<T>`, so `TranslateTrivialArgWithNoSugar` in [TranslateCallExpr.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/799e9f6545cc8a83355c5d77e777f8f571215815...feature_extern_with_enum#diff-04e26a3b08dd5edcc57fbf04e82e545ee0fd9bbd62b96f42c5496c9458c5965e) loads the value of the field from it. A variable, a static field, or a field accessed through a package has nothing recorded, and is simply read again.
-
 ##### Building the tree
 
 `BuildTree` turns a dynamic node into a constructor call of `Extern<T>`, and applies itself to the operands. An operand that is not dynamic (a variable, a literal, a normal call, a lambda, ...) is copied unchanged into the tree, as a leaf:
