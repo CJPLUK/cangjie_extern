@@ -1,2 +1,5 @@
 *.cjo
+# default cjc output binary (files only; keep source dirs like src/main/)
 main
+!main/
+.DS_Store
