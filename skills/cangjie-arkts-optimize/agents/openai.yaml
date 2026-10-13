@@ -1,0 +1,3 @@
+interface:
+  display_name: "Cangjie ArkTS Optimization"
+  short_description: "Find and apply Cangjie ArkTS interop optimizations"
