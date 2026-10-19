@@ -554,6 +554,17 @@ DESUGAR(e1[i] = e2) ~> // if e1 has type Extern<T>
     T.indexedUpdate(DESUGAR(e1), DESUGAR(i), DESUGAR(e2))
 DESUGAR(e1(e2, e3, ...)) ~> // if e1 has type Extern<T>
     T.functionCall(DESUGAR(e1), [DESUGAR(e2), DESUGAR(e3), ...])
+DESUGAR(e1.f op= e2) ~> // if e1 has type Extern<T>
+    let tmp1 = DESUGAR(e1)
+    let tmp2 = T.memberAccess(T.memberAccess(tmp1, "f"), "op")
+    T.memberUpdate(tmp1, "f", T.functionCall(tmp2, [DESUGAR(e2)]))
+DESUGAR(e1[i] op= e2) ~> // if e1 has type Extern<T>
+    let tmp1 = DESUGAR(e1)
+    let tmp2 = DESUGAR(i)
+    let tmp3 = T.memberAccess(T.indexedAccess(tmp1, tmp2), "op")
+    T.indexedUpdate(tmp1, tmp2, T.functionCall(tmp3, [DESUGAR(e2)]))
+DESUGAR(lhs op= e2) ~> // if lhs: Extern<T> is a variable or a field of a non-Extern value
+    lhs = DESUGAR(lhs`.op(e2)) // lhs` is mapped to lhs so its receiver is evaluated only once
 DESUGAR(base) ~> // expressions without smaller subexpressions are preserved as they are
     base
 DESUGAR(exp) ~> // otherwise, preserve structure and desugar subexpressions
@@ -563,7 +574,7 @@ DESUGAR(exp) ~> // otherwise, preserve structure and desugar subexpressions
 
 For non-`Extern` Cangjie expressions, `MAP(DESUGAR, exp)` preserves the outer expression and desugars its subexpressions. Indices, arguments and update values keep their own type and are not converted with `toExtern`, as stated in [dynamic operations](#dynamic-operations). The argument array passed to `functionCall` has type `Array<Any>`.
 
-For `e.f op= v` and `e[i] op= v` with `e: Extern<T>`, `DESUGAR` uses the read/call/write expansions in [Compound Assignment](#compound-assignment).
+The compound-assignment rules are discussed in [Section 3.2.4, Compound Assignment](#compound-assignment). Here `"op"` denotes the operator name without `=` (e.g. `"+"` for `+=`), and the temporaries are fresh names.
 
 The generated calls follow standard Cangjie evaluation order. Compound-assignment expansions use temporaries so that the receiver and index are evaluated only once.
 
