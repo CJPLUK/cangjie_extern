@@ -68,7 +68,7 @@ func testCJ(vm: Extern<T>): Unit where T <: ForeignRuntime<T> {
 
 Compilation stages according to [cangjie_compiler/src/Frontend/CompilerInstance.cpp](https://gitcode.com/Cangjie/cangjie_compiler/blob/main/src/Frontend/CompilerInstance.cpp).
 
-This document is mostly about the boxes in red. More detailed information about the implementation can be found in [5. Detailed Implementation Details](#5-detailed-implementation-plan).
+This document is mostly about the boxes in red. More detailed information about the implementation can be found in [4. Detailed Implementation Plan](#4-detailed-implementation-plan).
 
 ```mermaid
 flowchart TB
@@ -89,7 +89,7 @@ flowchart TB
         OverflowStrategy["Overflow Strategy"]
         Mangling["Mangling"]
         SaveCJO["Save CJO"]
-        CHIR["CHIR (7)<br/><br/><p style='text-align:left'>Extern optimizations</p>"]
+        CHIR["CHIR (7)<br/><br/><p style='text-align:left'>getExtern / setExtern intrinsics</p>"]
         CodeGen["Code Generation"]
         SaveResults["Save Results"]
         style Parser fill:#fa7c5c
@@ -105,7 +105,7 @@ flowchart TB
     end
 
     subgraph StdCore["std.core (1)"]
-        ExternType["Extern&lt;T&gt;<br/>enum"]
+        ExternType["Extern&lt;T&gt;<br/>struct"]
         Exc["Exception<br/>hierarchy"]
         FRT["ForeignRuntime&lt;T&gt;<br/>interface"]
         style ExternType fill:#fa7c5c
@@ -147,13 +147,13 @@ flowchart TB
 
 | Component | Role |
 | --- | --- |
-| `cangjie_runtime` - std.core | (1) New file [`extern_runtime.cj`](https://gitcode.com/claudio_/cangjie_runtime/blob/feature_extern_runtime/stdlib/libs/std/core/extern_runtime.cj) in `std.core` with `Extern<T>` enum, `ForeignRuntime<T>` interface, new exceptions, and documentation about new public declarations. |
+| `cangjie_runtime` - std.core | (1) New file [`extern_runtime.cj`](https://gitcode.com/claudio_/cangjie_runtime/blob/feature_extern_runtime/stdlib/libs/std/core/extern_runtime.cj) in `std.core` with `Extern<T>` struct, `ForeignRuntime<T>` interface, new exceptions, and documentation about new public declarations. |
 | `cangjie_runtime` - std.ast | (2) New `ForcedCastExpr <: Expr` class. Class declaration, flatbuffers serialization. |
 | `cangjie_compiler` - Parser | (3) Parse forced cast `(U)e` expressions as `ForcedCastExpr`. Note, that at this point we still don't know if we have a forced cast or a call expression of the form `(f)(x)` - this decision is postponed to SEMA. |
 | `cangjie_compiler` - Macro Expand | (4) Add support for new ForcedCastExpr expressions, including flatbuffers serialization. |
-| `cangjie_compiler` - Sema | (5) Type checking of Extern expressions and annotate Extern expression that need desugaring. Typing rules in section [3.2.2. Type Checking Rules](#322-type-checking-rules). Implementation details in [5.1. Type Checking](#51-type-checking). |
-| `cangjie_compiler` - Desugar After Sema | (6) Additional pass to desugar annotated Extern expressions. Desugaring rules in section [3.2.3. Desugaring after sema](#323-desugaring-after-sema).  Implementation details in [5.2. Desugaring](#52-desugaring). |
-| `cangjie_compiler` - CHIR | (7) TODO: mention intrinsic implementation of getExtern and setExtern |
+| `cangjie_compiler` - Sema | (5) Type checking of Extern expressions and annotate Extern expression that need desugaring. Typing rules in section [3.2.2. Type Checking Rules](#322-type-checking-rules). Implementation details in [4.1. Type checking](#41-type-checking). |
+| `cangjie_compiler` - Desugar After Sema | (6) Additional pass to desugar annotated Extern expressions. Desugaring rules in section [3.2.3. Desugaring after sema](#323-desugaring-after-sema).  Implementation details in [4.2. Desugaring](#42-desugaring). |
+| `cangjie_compiler` - CHIR | (7) Lower the `getExtern` and `setExtern` intrinsics to direct reads and writes of the `Extern<T>.payload` field, bypassing dynamic member-access/update desugaring. |
 | `cangjie_tools` | Consequence of (1). Some LSP tests golden files need to be updated because of additional new public declarations in std.core. |
 
 No changes in the compiler backend or any specific OS-specific features.
@@ -162,7 +162,7 @@ No changes in the compiler backend or any specific OS-specific features.
 
 - **New std.core API:** `Extern<T>`, `ForeignRuntime<T>`, exception classes — additive, no breaking change to existing APIs.
 - **New syntax:** Forced cast `(U)e` — purely additive.
-- **ABI:** `Extern<T>` is a `non-exhaustive enum`; adding constructors at the end of an `non-exhaustive enum` doesn't break API/ABI compatibility.
+- **ABI:** `Extern<T>` is a `struct` holding an `Any` payload
 - **Backward compatibility:** Full compatible, including `ohos.ark_interop` code continues to work; migration is opt-in.
 
 ### External user perception
@@ -175,7 +175,7 @@ External developers will see new `Extern<T>`, `ForeignRuntime<R>` types and `(U)
 | --- | --- |
 | **Compile time** | Parsing forced-cast, typing of Extern expressions and additional pass to desugar Extern expressions (~1500 loc); should negligible for typical projects |
 | **Runtime** | Each dynamic operation is a static call to `ForeignRuntime` method; runtime implementer is responsible for the design, implementation, and optimization of these methods |
-| **Space** | Extern expressions are captured in a tree and evaluated at runtime. |
+| **Space** | `Extern<T>` holds a single `Any` payload per handle. |
 
 ---
 
@@ -193,12 +193,12 @@ let result     : Float64   = (Float64)sum
 During compilation, the example above is desugared as follows.
 
 ```cangjie
-let calculator : Extern<T> = T.eval(ExternMemberAccess(vm, "calculator"))
-let sum        : Extern<T> = T.eval(ExternFunctionCall(ExternMemberAccess(calculator, "add"), [2, 3.5]))
-let result     : Float64   = T.fromExterrn<Float64>(sum)
+let calculator : Extern<T> = T.memberAccess(vm, "calculator")
+let sum        : Extern<T> = T.functionCall(T.memberAccess(calculator, "add"), [2, 3.5])
+let result     : Float64   = T.fromExtern<Float64>(sum)
 ```
 
-The compiler builds a tree for the Extern typed expressions and calls `ForeignRuntime` static functions.
+The compiler desugars Extern typed expressions directly into calls to `ForeignRuntime` static functions.
 
 Section 3.1 introduces the changes to standard library core, and Section 3.2 introduces the changes required in the compiler.
 
@@ -206,45 +206,47 @@ Section 3.1 introduces the changes to standard library core, and Section 3.2 int
 
 We introduce a **new file**: `stdlib/libs/std/core/extern_runtime.cj` containing the following definitions.
 
-#### `Extern<T>` enum <span id="externt-enum"></span>
+#### `Extern<T>` struct <span id="externt-struct"></span>
 
 ```cangjie
-public enum Extern<T> where T <: ForeignRuntime<T> {
-    // primitive constructors
-    | ExternPayload(Any)
-    | ExternMemberAccess(Extern<T>,       /* field */ String)
-    | ExternIndexedAccess(Extern<T>,      /* index */ Any)
-    | ExternMemberUpdate(Extern<T>,       /* field */ String, /* value */ Any)
-    | ExternIndexedUpdate(Extern<T>,      /* index */ Any,    /* value */ Any)
-    | ExternFunctionCall(Extern<T>,       /* args  */ Array<Any>)
-    | ExternCompoundAssignment(Extern<T>, /* opt   */ String, /* value */ Any)
-    // derived constructors
-    | ...
+@Intrinsic
+func getExtern<T>(e: Extern<T>): Any where T <: ForeignRuntime<T>
 
-    public static func evalDerived(e: Extern<T>): Extern<T> {
-        match(e) {
-            case _ => throw ExternUnsupportedOperation()
-        }
+@Intrinsic
+func setExtern<T>(e: Extern<T>, payload: Any): Unit where T <: ForeignRuntime<T>
+
+public struct Extern<T> where T <: ForeignRuntime<T> {
+    private var payload: Any = ()
+
+    public Extern(payload: Any) {
+        setExtern(this, payload)
+    }
+    public static func getPayload(e: Extern<T>): Any {
+        getExtern(e)
     }
 }
 ```
 
-The `Extern<T>` constructors above are said to be the primitive `Extern` constructors.
+The property `Extern<T>.getPayload(Extern<T>(v)) = v` holds for any value `v: Any` and `T <: ForeignRuntime<T>`.
 
-Even though we define `Extern<T>` as being non-exhaustive we require new constructors to be derived from the others. The `evalDerived` function is intended to implement how new constructors should be evaluated in terms of the primitive constructors. Adding a new constructor to `Extern<T>`, requires adding support for it in `evalDerived`.
+The default payload makes `this` fully initialized before the constructor body runs. The compiler lowers `getExtern` and `setExtern` to direct field reads and writes, bypassing dynamic `Extern` member-access/update desugaring.
 
 #### `ForeignRuntime<T>` interface
 
 ```cangjie
 public interface ForeignRuntime<T> where T <: ForeignRuntime<T> {
-    static func fromExtern<R>(e: Extern<T>): R
-    static func toExtern<R>(v: R): Extern<T>
+    static func memberAccess(e: Extern<T>, field: String): Extern<T>
+    static func indexedAccess(e: Extern<T>, arg: Any): Extern<T>
 
-    static func eval(t: Extern<T>): Extern<T>
+    static func memberUpdate(e: Extern<T>, field: String, value: Any): Unit
+    static func indexedUpdate(e: Extern<T>, field: Any, value: Any): Unit
+
+    static func functionCall(e: Extern<T>, args: Array<Any>): Extern<T>
+
+    static func fromExtern<R>(h: Extern<T>): R
+    static func toExtern<R>(v: R): Extern<T>
 }
 ```
-
-Implementers of `ForeignRuntime<T>` are requested to handle `ExternPayload`, `ExternMemberAccess`, `ExternIndexedAccess`, `ExternMemberUpdate`, `ExternIndexedUpdate`, and `ExternFunctionCall`, and to call `Extern<T>.evalDerived` in the default case.
 
 #### Exception hierarchy (all in `std.core`) <span id="exception-hierarchy-all-in-stdcore"></span>
 
@@ -254,10 +256,8 @@ Implementers of `ForeignRuntime<T>` are requested to handle `ExternPayload`, `Ex
 | `ExternFunctionAccessException` | Non-existing function access |
 | `ExternFunctionCallException` | Wrong arguments to function call |
 | `ExternIndexedAccessException` | Wrong index or out-of-bounds |
-| `ExternCompoundAssignmentException` | Unsupported compound assignment |
 | `ExternConversionException` | `fromExtern` / `toExtern` conversion failure |
 | `ForeignRuntimeException` | Foreign runtime throws (includes foreign stack trace) |
-| `ExternUnsupportedOperation` | Runtime implementer doesn't implement optimization |
 
 
 #### API contract <span id="api-contract"></span>
@@ -268,34 +268,32 @@ Implementers of `ForeignRuntime<T>` are requested to handle `ExternPayload`, `Ex
     - must throw `ExternConversionException` if a conversion exception occurs.
 2. `static func toExtern<R>(v: R): Extern<T>`
     - must throw `ExternConversionException` if a conversion exception occurs.
-3. `static func eval(t: Extern<T>): Extern<T>`
-    - must handle the `Extern` primitive constructors: `ExternPayload`, `ExternMemberAccess`, `ExternIndexedAccess`, `ExternMemberUpdate`, `ExternIndexedUpdate`, `ExternFunctionCall`, and `ExternCompoundAssignment`.
-    - must call `Extern<T>.evalDerived(t)` in the default case.
-    - must throw `ExternMemberAccessException`, `ExternFunctionAccessException`, `ExternFunctionCallException`, `ExternIndexedAccessException`, `ExternCompoundAssignmentException` if the respective dynamic operation fails.
-    - must throw `ForeignRuntimeException` if the execution in the external runtime throws an exception.
+3. `static func memberAccess(e: Extern<T>, field: String): Extern<T>`
+    - must throw `ExternMemberAccessException` for a non-existing member, or `ExternFunctionAccessException` for a non-existing function.
+4. `static func indexedAccess(e: Extern<T>, arg: Any): Extern<T>`
+    - must throw `ExternIndexedAccessException` for a wrong index.
+5. `static func memberUpdate(e: Extern<T>, field: String, value: Any): Unit`
+    - must throw `ExternMemberAccessException` for a non-existing member.
+6. `static func indexedUpdate(e: Extern<T>, field: Any, value: Any): Unit`
+    - must throw `ExternIndexedAccessException` for a wrong index.
+7. `static func functionCall(e: Extern<T>, args: Array<Any>): Extern<T>`
+    - must throw `ExternFunctionAccessException` for a non-existing function, or `ExternFunctionCallException` for wrong arguments.
+
+These functions must throw `ForeignRuntimeException` if execution in the external runtime throws an exception.
 
 Example:
 
 ```cangjie
 public class MockRT <: ForeignRuntime<MockRT> {
-    public static func eval(t: Extern<MockRT>): Extern<MockRT> {
-        match (t) {
-            case ExternPayload(_) => t
-            case ExternMemberAccess(e, field) => /* specific implementation of ExternMemberAccess */ throw ExternMemberAccessException()
-            case ExternIndexedAccess(e, index) => /* specific implementation of ExternIndexedAccess */ throw ExternIndexedAccessException()
-            case ExternMemberUpdate(e, field, value) => /* specific implementation of ExternMemberUpdate */ throw ExternMemberAccessException()
-            case ExternIndexedUpdate(e, index, value) => /* specific implementation of ExternIndexedUpdate */ throw ExternIndexedAccessException()
-            case ExternFunctionCall(e, args) => /* specific implementation of ExternFunctionCall */ throw ExternFunctionAccessException()
-            case ExternCompoundAssignment(e, op, value) => /* specific implementation of ExternCompoundAssignment */ throw ExternCompoundAssignmentException()
-            case _ => Extern<MockRT>.evalDerived(t) // <==== Calling `evalDerived` from `Extern<T>`
-        }
-    }
-    public static func fromExtern<R>(e: Extern<MockRT>): R { throw ExternConversionException() }
-    public static func toExtern<R>(v: R): Extern<MockRT> { throw ExternConversionException() }
+    public static func memberAccess(e: Extern<MockRT>, field: String): Extern<MockRT> { throw ExternMemberAccessException("Member not found") }
+    public static func indexedAccess(e: Extern<MockRT>, arg: Any): Extern<MockRT> { throw ExternIndexedAccessException("Invalid index") }
+    public static func memberUpdate(e: Extern<MockRT>, field: String, value: Any): Unit { throw ExternMemberAccessException("Member not found") }
+    public static func indexedUpdate(e: Extern<MockRT>, field: Any, value: Any): Unit { throw ExternIndexedAccessException("Invalid index") }
+    public static func functionCall(e: Extern<MockRT>, args: Array<Any>): Extern<MockRT> { throw ExternFunctionAccessException("Function not found") }
+    public static func fromExtern<R>(e: Extern<MockRT>): R { throw ExternConversionException("Unsupported conversion") }
+    public static func toExtern<R>(v: R): Extern<MockRT> { throw ExternConversionException("Unsupported conversion") }
 }
 ```
-
-Note how the default case (`case _ => ...`) invokes `Extern<MockRT>.evalDerived(t)` so that new derived constructors are supported out of the box.
 
 ### 3.2 Compiler changes
 
@@ -355,7 +353,7 @@ extend<T> ForeignValue<T> where T <: ForeignRuntime<T> {}
 Both extensions report:
 
 ```bash
-error: extending type 'Enum-Extern<Generics-T>' is not allowed
+error: extending type 'Struct-Extern<Generics-T>' is not allowed
 ```
 
 ##### Implicit conversion
@@ -431,14 +429,14 @@ k(1)                                              // OK, calls k(p: Int64), whic
 
 ##### Dynamic operations
 
-For a value `e: Extern<T>`, all operations below have type `Extern<T>`.
+For a value `e: Extern<T>`, reads and calls have type `Extern<T>`, while updates have type `Unit`.
 
-| Operation | Rule |
-|---|---|
-| `e.f` | No static foreign-member lookup. |
-| `e[idx]` | Index must be well-typed expressions of any type. |
-| `e(a1, ..., an)` | Arguments must be well-typed expressions of any type; named and `inout` arguments are rejected. |
-| `e.f = v`, `e[idx] = v`, `e.f op= v`, `e[idx] op= v` | Index and `v` must be well-typed expressions of any type. |
+| Operation | Rule | Result type |
+|---|---|---|
+| `e.f` | No compile-time check on field `f`. | `Extern<T>` |
+| `e[idx]` | Index must be well-typed expressions of any type. | `Extern<T>` |
+| `e(a1, ..., an)` | Arguments must be well-typed expressions of any type; named and `inout` arguments are rejected. | `Extern<T>` |
+| `e.f = v`, `e[idx] = v`, `e.f op= v`, `e[idx] op= v` | Index and `v` must be well-typed expressions of any type. | `Unit` |
 
 Indices, arguments and update values do not implicitly call `toExtern`. Assignment to an `Extern<T>` variable follows ordinary assignment rules. Operators rewritten as member calls follow the dynamic-call rules; `++` and `--` require integer operands. Multiple assignment checks each update independently.
 
@@ -446,7 +444,7 @@ Examples, with `e: Extern<R>` and `x: Int64`:
 
 ```cangjie
 e.f                      // type Extern<R>
-e.f.g.h                  // type Extern<R>; each member access is dynamic
+e.f.g.h                  // type Extern<R>; each member access is dynamic, no compile-time check on fields `f`, `g`, `g`.
 e[0]["k"]                // type Extern<R>; each subscript is dynamic
 e[x, "k"]                // type Extern<R>; indices of any type
 e(1, "a")                // type Extern<R>; e is called as a function
@@ -454,10 +452,10 @@ e.f(1, "a")              // type Extern<R>; arguments will not be converted
 e.f(1)(2)                // type Extern<R>; the result is called again
 e.f { => 1 }             // type Extern<R>; the trailing lambda is an argument
 e.f(e.g)                 // type Extern<R>; Extern<R> arguments are passed as they are
-e.f = e.g                // type Extern<R>
-e[0] = "a"               // type Extern<R>; value will not be converted
-e.f += 1                 // type Extern<R>; literal 1 will not be converted
-e[0] += 1                // type Extern<R>
+e.f = e.g                // type Unit
+e[0] = "a"               // type Unit; value will not be converted
+e.f += 1                 // type Unit; literal 1 will not be converted
+e[0] += 1                // type Unit
 (e.f, e[0]) = (1, "a")   // each update is checked independently
 e + 1                    // type Extern<R>; desugared as `e.+(1)`
 let i: Int64 = e.f       // type error: no implicit conversion from Extern<R>
@@ -471,7 +469,7 @@ e++                      // type error: integer required
 
 ##### Forced cast
 
-At the desugaring stage the remaining operations `(U)e` are not ambiguous anymore and can be desugared as `T.fromExtern<U>(BUILD_TREE(e))`, for `e: Extern<T>` and `T <: ForeignRuntime<T>`. The desugaring function `BUILD_TREE` is defined below.
+At the desugaring stage the remaining operations `(U)e` are not ambiguous anymore and can be desugared as `T.fromExtern<U>(DESUGAR(e))`, for `e: Extern<T>` and `T <: ForeignRuntime<T>`. The desugaring function `DESUGAR` is defined below.
 
 ##### Implicit conversion to `Extern<T>` <span id="implicit-conversion-to-externt"></span>
 
@@ -504,10 +502,8 @@ foo(..., R.toExtern<Int64>(42), ...)
 **Example 3**:
 
 ```cangjie
-let a1: Array<Extern<R>> = [1, "a"]
-
 let x: Int64 = 42
-let a2: Array<Extern<R>> = [x, 12]
+let a: Array<Extern<R>> = [x, 12]
 
 let b: Extern<R> = [x, 12]
 ```
@@ -515,10 +511,8 @@ let b: Extern<R> = [x, 12]
 is desugared into
 
 ```cangjie
-let a1: Array<Extern<R>> = [R.toExtern<Int64>(1), R.toExtern<String>("a")]
-
 let x: Int64 = 42
-let a2: Array<Extern<R>> = [R.toExtern<Int64>(x), R.toExtern<Int64>(12)]
+let a: Array<Extern<R>> = [R.toExtern<Int64>(x), R.toExtern<Int64>(12)]
 
 let b: Extern<R> = R.toExtern<Array<Int64>>([x, 12])
 ```
@@ -545,60 +539,40 @@ let y: Extern<R> = match (n) {
 
 ##### Dynamic Extern expression desugaring
 
-The desugaring of `Extern` expressions is performed according to the `DESUGAR` function defined below. It resorts to tree-building function `BUILD_TREE` and applies `T.eval` to the result.
+The desugaring of `Extern` expressions is performed according to the `DESUGAR` function defined below. Each dynamic operation becomes a direct static call to the corresponding `ForeignRuntime<T>` function.
 
 ```cangjie
 DESUGAR((U)exp) =
-    T.fromExtern<U>(BUILD_TREE(exp))
+    T.fromExtern<U>(DESUGAR(exp))
 DESUGAR(e1.f) = // if e1 has type Extern<T>
-    T.eval(ExternMemberAccess(BUILD_TREE(e1), "f"))
+    T.memberAccess(DESUGAR(e1), "f")
 DESUGAR(e1.f = e2) = // if e1 has type Extern<T>
-    T.eval(ExternMemberUpdate(BUILD_TREE(e1), "f", BUILD_TREE(e2)))
+    T.memberUpdate(DESUGAR(e1), "f", DESUGAR(e2))
 DESUGAR(e1[i]) = // if e1 has type Extern<T>
-    T.eval(ExternIndexedAccess(BUILD_TREE(e1), BUILD_TREE(i)))
+    T.indexedAccess(DESUGAR(e1), DESUGAR(i))
 DESUGAR(e1[i] = e2) = // if e1 has type Extern<T>
-    T.eval(ExternIndexedUpdate(BUILD_TREE(e1), BUILD_TREE(i), BUILD_TREE(e2)))
+    T.indexedUpdate(DESUGAR(e1), DESUGAR(i), DESUGAR(e2))
 DESUGAR(e1(e2, e3, ...)) = // if e1 has type Extern<T>
-    T.eval(ExternFunctionCall(BUILD_TREE(e1), [BUILD_TREE(e2), BUILD_TREE(e3), ...]))
-DESUGAR(e1 op= e2) = // if e1 is e.f or e[i] with e of type Extern<T>
-    T.eval(ExternCompoundAssignment(BUILD_TREE(e1), op, BUILD_TREE(e2)))
-DESUGAR(x op= e2) = // if x is a variable of type Extern<T>
-    x = DESUGAR(x.op(e2))
-DESUGAR(exp.f op= e2) = // if exp has a non-Extern type and exp.f has type Extern<T>
-    exp.f = DESUGAR(exp`.f.op(e2))   // exp is evaluated once, exp` is a reference to exp
+    T.functionCall(DESUGAR(e1), [DESUGAR(e2), DESUGAR(e3), ...])
 DESUGAR(base) = // expressions without smaller subexpressions are preserved as they are
     base
-DESUGAR(exp) = // otherwise, for desugar sub expressions and preserve structure
+DESUGAR(exp) = // otherwise, preserve structure and desugar subexpressions
     MAP(DESUGAR, exp)
 ```
 
-For `BUILD_TREE`, the following cases apply when `e1` has type `Extern<T>`:
 
-```cangjie
-BUILD_TREE(e1.f)            = ExternMemberAccess(BUILD_TREE(e1), "f")
-BUILD_TREE(e1.f = e2)       = ExternMemberUpdate(BUILD_TREE(e1), "f", BUILD_TREE(e2))
-BUILD_TREE(e1[i])           = ExternIndexedAccess(BUILD_TREE(e1), BUILD_TREE(i))
-BUILD_TREE(e1[i] = e2)      = ExternIndexedUpdate(BUILD_TREE(e1), BUILD_TREE(i), BUILD_TREE(e2))
-BUILD_TREE(e1(e2, e3, ...)) = ExternFunctionCall(BUILD_TREE(e1), [BUILD_TREE(e2), BUILD_TREE(e3), ...])
-BUILD_TREE(e1 op= e2)       = ExternCompoundAssignment(BUILD_TREE(e1), op, BUILD_TREE(e2))
-BUILD_TREE(exp)             = MAP(DESUGAR, exp)    // otherwise, desugar subexpressions and preserve structure
-```
+For non-`Extern` Cangjie expressions, `MAP(DESUGAR, exp)` preserves the outer expression and desugars its subexpressions. Indices, arguments and update values keep their own type and are not converted with `toExtern`, as stated in [dynamic operations](#dynamic-operations). The argument array passed to `functionCall` has type `Array<Any>`.
 
-For `Extern` expressions, `BUILD_TREE` builds dynamic `Extern` trees. For non-`Extern` Cangjie expressions, `MAP(DESUGAR, exp)` preserves the outer expression and desugars its subexpressions. These are leaves of the tree and keep their own type: indices, arguments and update values are not converted with `toExtern`, as stated in [dynamic operations](#dynamic-operations).
+For `e.f op= v` and `e[i] op= v` with `e: Extern<T>`, `DESUGAR` uses the read/call/write expansions in [Compound Assignment](#compound-assignment).
 
-The other dynamic operations of the type checking rules reduce to the cases above:
-- `e1[i1, ..., in]` is desugared as `e1[i1]...[in]`, and `e1[i1, ..., in] = e2` as `e1[i1]...[in-1][in] = e2`;
-- an operator is first rewritten as a member call by the type checker, as for any operator overloading: `e1 op e2` becomes `e1.op(e2)`, e.g. `e1 + 1` becomes `e1.+(1)`, and `op e1` becomes `e1.op()`, e.g. `-e1` becomes `e1.-()`, which are dynamic calls;
-- a multiple assignment is desugared into single assignments before `DESUGAR` (see [Multiple Assignment Expression](#multiple-assignment-expression)).
-
-**IMPORTANT**: For the `Extern` expression trees, the evaluation order is defined by the foreign-runtime implementation; for non-`Extern` Cangjie expressions, the standard Cangjie evaluation order applies. The specification must account for this distinction.
+The generated calls follow standard Cangjie evaluation order. Compound-assignment expansions use temporaries so that the receiver and index are evaluated only once.
 
 Example 1:
 
 For `e1: Extern<T>`.
 
 ```cangjie
-DESUGAR(e1.x.y) = T.eval(ExternMemberAccess(ExternMemberAccess(e1, "x"), "y"))
+DESUGAR(e1.x.y) = T.memberAccess(T.memberAccess(e1, "x"), "y")
 ```
 
 Example 2:
@@ -607,11 +581,10 @@ For `e1, e2: Extern<T>`.
 
 ```cangjie
 DESUGAR(e1.x.y = e2.z) =
-    T.eval( ExternMemberUpdate(
-                ExternMemberAccess(e1, "x"),
-                "y",
-                ExternMemberAccess(e2, "z")
-            )
+    T.memberUpdate(
+        T.memberAccess(e1, "x"),
+        "y",
+        T.memberAccess(e2, "z")
     )
 ```
 
@@ -621,12 +594,9 @@ For `e1, e2: Extern<T>`.
 
 ```cangjie
 DESUGAR(e1.x += e2) =
-    T.eval( ExternCompoundAssignment(
-                ExternMemberAccess(e1, "x"),
-                "+",
-                e2
-            )
-    )
+    let tmp1 = e1
+    let tmp2 = T.memberAccess(T.memberAccess(tmp1, "x"), "+")
+    T.memberUpdate(tmp1, "x", T.functionCall(tmp2, [e2]))
 ```
 
 Example 4:
@@ -635,10 +605,9 @@ For `e1, e2: Extern<T>`.
 
 ```cangjie
 DESUGAR(e1.a[e2.b]) =
-    T.eval( ExternIndexedAccess(
-                ExternMemberAccess(e1, "a"),
-                ExternMemberAccess(e2, "b")
-            )
+    T.indexedAccess(
+        T.memberAccess(e1, "a"),
+        T.memberAccess(e2, "b")
     )
 ```
 
@@ -648,11 +617,10 @@ For `e1, e2, e3: Extern<T>`.
 
 ```cangjie
 DESUGAR(e1.a[e2.b] = e3.c) =
-    T.eval( ExternIndexedUpdate(
-                ExternMemberAccess(e1, "a"),
-                ExternMemberAccess(e2, "b"),
-                ExternMemberAccess(e3, "c")
-            )
+    T.indexedUpdate(
+        T.memberAccess(e1, "a"),
+        T.memberAccess(e2, "b"),
+        T.memberAccess(e3, "c")
     )
 ```
 
@@ -662,12 +630,9 @@ For `e1, e2, e3: Extern<T>`.
 
 ```cangjie
 DESUGAR(e1.a[e2].b -= e3.c) =
-    T.eval( ExternCompoundAssignment(
-                ExternMemberAccess(ExternIndexedAccess(ExternMemberAccess(e1, "a"), e2), "b"),
-                "-",
-                ExternMemberAccess(e3, "c")
-            )
-    )
+    let tmp1 = T.indexedAccess(T.memberAccess(e1, "a"), e2)
+    let tmp2 = T.memberAccess(T.memberAccess(tmp1, "b"), "-")
+    T.memberUpdate(tmp1, "b", T.functionCall(tmp2, [T.memberAccess(e3, "c")]))
 ```
 
 Example 7:
@@ -676,90 +641,110 @@ For `e1, e2, e3: Extern<T>`, `n: Int64`.
 
 ```cangjie
 DESUGAR(e1.a.b(e2.c, e3[0], n + 1)) =
-    T.eval( ExternFunctionCall(
-                ExternMemberAccess(ExternMemberAccess(e1, "a"), "b"),
-                [ ExternMemberAccess(e2, "c"), 
-                  ExternIndexedAccess(e3, 0),
-                  n + 1
-                ]
-            )
+    T.functionCall(
+        T.memberAccess(T.memberAccess(e1, "a"), "b"),
+        [ T.memberAccess(e2, "c"),
+          T.indexedAccess(e3, 0),
+          n + 1
+        ]
     )
 ```
 
-Example 9:
+Example 8:
 
 For a variable `x: Extern<T>` and a function `foo(): C`, where `C` has a field `f: Extern<T>`.
 
 ```cangjie
 DESUGAR(x += 1)       =
-    x = T.eval(ExternFunctionCall(ExternMemberAccess(x, "+"), [1]))
+    x = T.functionCall(T.memberAccess(x, "+"), [1])
 DESUGAR(foo().f *= 2) = 
-    foo().f = T.eval(ExternFunctionCall(ExternMemberAccess(foo`.f, "*"), [2]))   // foo() is evaluated once, foo` is a reference for foo()
+    foo().f = T.functionCall(T.memberAccess(foo`.f, "*"), [2])   // foo() is evaluated once, foo` is a reference for foo()
 ```
 
-#### Other forms of assignment
+#### 3.2.4 Other forms of assignment
 
 ##### Multiple Assignment Expression <span id="multiple-assignment-expression"></span>
 
 Multiple assignment of the form `(x1, ..., x3) = ...` remains consistent with the current specification/implementation. This occurs naturally because the desugaring of multiple assignment occurs before the desugaring of Extern.
 
+##### Compound Assignment <span id="compound-assignment"></span>
+
+Compound assignment to a dynamic member or index needs an explicit read/call/write expansion. We desugar compound assignments as follows, depending on the shape of the left-hand side expression. Each result has type `Unit`; the receiver and index are evaluated only once, and the right-hand side is passed without an implicit `toExtern` conversion.
+
+###### Case 1
+
+Let `x: Extern<T>` be a mutable variable and `e2: Extern<T>`, then:
+
+```cangjie
+x += e2
+```
+
+is desugared into
+
+```cangjie
+let tmp1 = T.memberAccess(x, "+")
+x = T.functionCall(tmp1, [e2])
+```
+
+###### Case 2
+
+Let `e1: Extern<T>` and `e2: Extern<T>`, then:
+
+```cangjie
+e1.foo += e2
+```
+
+is desugared into
+
+```cangjie
+let tmp1 = e1
+let tmp2 = T.memberAccess(T.memberAccess(tmp1, "foo"), "+")
+T.memberUpdate(tmp1, "foo", T.functionCall(tmp2, [e2]))
+```
+
+###### Case 3
+
+Let `e1: Extern<T>`, `e2: Extern<T>`, and `idx: Any`, then:
+
+```cangjie
+e1[idx] += e2
+```
+
+is desugared into
+
+```cangjie
+let tmp1 = e1
+let tmp2 = idx
+let tmp3 = T.indexedAccess(tmp1, tmp2)
+let tmp4 = T.memberAccess(tmp3, "+")
+T.indexedUpdate(tmp1, tmp2, T.functionCall(tmp4, [e2]))
+```
+
+The same expansions apply to other compound operators, using the operator name without `=` (e.g. `"-"` for `-=`), and to any well-typed right-hand side. Any dynamic subexpressions in the receiver, index or right-hand side are recursively desugared.
+
 ---
 
-## 4. Runtime implementer possible optimizations
+## 4. Detailed Implementation Plan
 
-#### Possible optimization 1: intern field names
-
-```cangjie
-e.foo
-e.foo
-// T.eval(ExternMemberAccess(e, "foo"))
-// T.eval(ExternMemberAccess(e, "foo"))
-```
-
-A naive `eval` converts the Cangjie string `"foo"` into a foreign string on every access. Interning it as a reusable foreign string removes that conversion from all later accesses of the same field name.
-
-#### Possible optimization 2: cache converted strings
-
-```cangjie
-let e1: Extern<T> = "foo"
-let e2: Extern<T> = "foo"
-// T.toExtern<String>("foo")
-// T.toExtern<String>("foo")
-```
-
-A naive `toExtern` allocates and converts the same Cangjie string twice. Caching the foreign string keyed by the Cangjie value turns the second conversion into a lookup; the dual is `fromExtern<String>(e)` on the same immutable foreign string.
-
-#### Possible optimization 3: bulk conversion of aggregates
-
-```cangjie
-let a: Extern<T> = [1, 2, 3]
-// T.toExtern<Array<Int64>>([1, 2, 3])
-```
-
-A naive `toExtern` builds the foreign array one element at a time. Copying the buffer in one go costs a single FFI call for the whole array; the dual is `(Array<Int64>)a` in `fromExtern`.
-
----
-
-## 5. Detailed Implementation Plan
-
-The compiler introduces two rewrites:
+The compiler introduces three rewrites:
 
 | Rewrite | Source | Result |
 |---|---|---|
 | Implicit conversion | `e: U` where `Extern<T>` is expected | `T.toExtern<U>(e)` |
-| Dynamic operation | `e.f`, `e[i]`, `e(args)`, `e.f = v`, `e[i] = v`, `e.f op= v` with `e: Extern<T>` | `T.eval(tree)` |
+| Forced cast | `(U)e` with `e: Extern<T>` | `T.fromExtern<U>(DESUGAR(e))` |
+| Dynamic operation | `e.f`, `e[i]`, `e(args)`, `e.f = v`, `e[i] = v`, `e.f op= v`, `e[i] op= v` with `e: Extern<T>` | Direct calls to `T.memberAccess`, `T.indexedAccess`, `T.functionCall`, `T.memberUpdate` and `T.indexedUpdate`, with temporaries for compound assignments |
 
 Sema only accepts these expressions and gives them their types. The rewrites happen in one pass after Sema, driven by the final types.
 
-### 5.1. Type checking
+### 4.1. Type checking
 
-#### 5.1.1. `Extern` cannot be extended
+#### 4.1.1. `Extern` cannot be extended
 
 Extending `Extern` should result in a type error.
 
 `CheckExtendedTypeValidity` in [TypeCheckExtend.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/799e9f6545cc8a83355c5d77e777f8f571215815...feature_extern_with_enum#diff-6f0fdcb019a9c84eec322123375088e33baaf881deddc63a69a0412dfa74266a) should report `sema_illegal_extended_type` for `extend Extern<T>`, including through a type alias.
 
-#### 5.1.2. Implicit conversions
+#### 4.1.2. Implicit conversions
 
 ##### Conversion in `Check`
 
@@ -798,16 +783,16 @@ In [TypeCheckCall.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/799e9f
 
 Candidates that need no conversion are preferred. Among the remaining candidates the usual most-specific rule applies, and an ambiguity is an error.
 
-#### 5.1.3. Dynamic operations
+#### 4.1.3. Dynamic operations
 
-A dynamic node is typed `Extern<T>`, the type of its receiver.
+A dynamic read or call is typed `Extern<T>`, the type of its receiver. A dynamic update, including compound assignment, is typed `Unit`.
 
 | Source | Where | Rule |
 |---|---|---|
 | `e.f` | `InferMemberAccess` in [NameReferenceExpr.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/799e9f6545cc8a83355c5d77e777f8f571215815...feature_extern_with_enum#diff-68404baccb39294994d0a12c925dc7850b44ecd820c33cea5d8b0fb7e4b7a338) | if `e: Extern<T>` then `ty = Extern<T>` |
 | `e[idx]` | `ChkSubscriptExpr` in [SubscriptExpr.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/799e9f6545cc8a83355c5d77e777f8f571215815...feature_extern_with_enum#diff-eef0bc9ab04cd78288c9c07c822f27d053e14fe59a00057179d43847b31cd8ee)  |  if `e: Extern<T>` then `ty = Extern<T>`, `idx` has any valid type |
 | `e(args)`, `e.f(args)` | `ChkCallExpr` in [TypeCheckCall.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/799e9f6545cc8a83355c5d77e777f8f571215815...feature_extern_with_enum#diff-36ccbd7dd55048aa23676a6b9aec5ab136d3d401aa045a885f59e40a15b50e9b), before candidate lookup | if `e: Extern<T>`/`e.f : Extern<T>` then `ty = Extern<T>`; arguments of any type; named and `inout` arguments are errors |
-| `e.f = v`, `e[idx] = v` | `SynAssignExpr` in [AssignExpr.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/799e9f6545cc8a83355c5d77e777f8f571215815...feature_extern_with_enum#diff-5ae1203f7e609f777aa6cc264f4cf36c822a8307bb3f79c63930ccad3a9fe4e3), before operator overloading | if `e : Extern<T>` then `ty = Extern<T>`; `v`, `idx` of any type |
+| `e.f = v`, `e[idx] = v`, `e.f op= v`, `e[idx] op= v` | `SynAssignExpr` in [AssignExpr.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/799e9f6545cc8a83355c5d77e777f8f571215815...feature_extern_with_enum#diff-5ae1203f7e609f777aa6cc264f4cf36c822a8307bb3f79c63930ccad3a9fe4e3), before operator overloading | if `e : Extern<T>` then `ty = Unit`; the left value has type `Extern<T>`; `v`, `idx` of any type |
 
 The changes to these functions in pseudocode:
 
@@ -831,24 +816,25 @@ ChkCallExpr(ce):                           // ce is e(args) or e.f(args)
             synthesize the arguments without a target
             ce.ty = e.ty
 
-SynAssignExpr(ae):                         // ae is e.f = v or e[idx] = v
+SynAssignExpr(ae):                         // ae is a dynamic member/index update, including op=
     synthesize e                           // the receiver of the left value
     if IsDynamicExternUpdate(ae):          // before operator overloading
         SynExternUpdate(ae):
             synthesize the index and v without a target
-            ae.leftValue.ty = ae.ty = e.ty
+            ae.leftValue.ty = e.ty
+            ae.ty = Unit
 ```
 
-When one of these nodes is checked against an expected type, `Extern<T>` must be a subtype of it.
+When one of these nodes is checked against an expected type, its result type must be compatible with that type, subject to the implicit-conversion rules above.
 
 No other change is needed for:
 - **Operators.** `e1 + e2` and `-e` are already rewritten into `e1.+(e2)` and `e.-()`, which are dynamic calls of type `Extern<T>`. So `if (e1 < e2)` is an error: the condition is not `Bool`.
 - **`++` and `--`,** which stay errors: they need an integer type.
 - **A multiple assignment `(e.x, b) = (1, 2)`,** which becomes one dynamic update per element.
 
-### 5.2. Desugaring
+### 4.2. Desugaring
 
-#### 5.2.1. The pass
+#### 4.2.1. The pass
 
 New file [ExternDesugaring.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/799e9f6545cc8a83355c5d77e777f8f571215815...feature_extern_with_enum#diff-3971c90c7bf1422c4c5fb1fb2ef67a1ddbb0c276a6a0872958f5923f7f07b33f):
 
@@ -881,19 +867,23 @@ for (auto& pkg : pkgs) {
 
 ```text
 visit(node):
-    if node is a dynamic expression:                  // section 5.2.3
-        node.desugarExpr = T.eval(tree of node)       // the tree holds clones of the children
-        visit(node.desugarExpr)                       // the clones get desugared here
-        skip the children of node                     // replaced by node.desugarExpr, never used
+    if node is a forced cast (U)e:
+        node.desugarExpr = T.fromExtern<U>(clone(e))
+        visit(node.desugarExpr)
+        skip the children of node
+    else if node is a dynamic expression:            // section 4.2.3
+        node.desugarExpr = direct runtime call or compound-assignment expansion
+        visit(node.desugarExpr)                      // the cloned operands get desugared here
+        skip the children of node                   // replaced by node.desugarExpr, never used
     else:
-        if node expects Extern<T> for a value e: U:   // section 5.2.2
+        if node expects Extern<T> for a value e: U:   // section 4.2.2
             e.desugarExpr = T.toExtern<U>(e)
         visit the children of node
 ```
 
 `visit` is the pre-visit callback of the AST `Walker`, called on the package and on every node it reaches.
 
-#### 5.2.2. Implicit conversions
+#### 4.2.2. Implicit conversions
 
 The pass converts a value `e: U` wherever `Extern<T>` is expected in the following cases:
 
@@ -914,50 +904,35 @@ if NeedExternConversion(U, Extern<T>):
     e.ty          = Extern<T>
 ```
 
-#### 5.2.3. Dynamic operations
+#### 4.2.3. Dynamic operations
 
-A dynamic node is one of the expressions recognized by the `IsDynamicExtern*` predicates (section 5.3). It becomes `T.eval(tree)`, where `tree` is a value of `Extern<T>` that describes the operation with the constructors of `Extern<T>`. A chain of dynamic nodes, such as `e.a.b(1)`, gets a single `T.eval` around the tree of the whole chain.
+A dynamic node is one of the expressions recognized by the `IsDynamicExtern*` predicates (section 4.3). It becomes a direct static call to the corresponding `ForeignRuntime<T>` function. For example, `e.a.b(1)` becomes `T.functionCall(T.memberAccess(T.memberAccess(e, "a"), "b"), [1])`.
 
-##### Finding the outermost dynamic node
+##### Rewriting dynamic nodes
 
-The walk visits parents before children:
+The walk visits parents before children. It replaces each dynamic node with a runtime call containing clones of its operands, then visits those operands through the replacement:
 
 ```text
 visit(node):
     if node is dynamic:
-        node.desugarExpr = T.eval(BuildTree(node))
-        visit(node.desugarExpr)      // the leaves of the tree may contain dynamic nodes of their own
-        skip the children of node    // the nested dynamic nodes are already part of the tree
+        node.desugarExpr = direct runtime call or compound-assignment expansion
+        visit(node.desugarExpr)      // recursively desugar dynamic operations in the operands
+        skip the children of node   // only the replacement is used
     else:
         visit the children of node
 ```
 
-So the first dynamic node met on the way down is the outermost one:
-- in `e.a.b(1)`, the call is visited before `e.a.b` and `e.a`;
-- in `f(e.a)`, the call `f(...)` is a normal Cangjie call, so the walk goes on into its argument, and `e.a` is the outermost dynamic node there.
+In `e.a.b(1)`, the call is replaced first, then `e.a.b` and `e.a` become nested runtime calls. In `f(e.a)`, the normal Cangjie call is preserved and its argument becomes `T.memberAccess(e, "a")`.
 
-##### Compound assignment of a Extern variable or field
+##### Compound assignment of an Extern variable or field
 
-Sema rewrites `lhs op= v`, where `lhs: Extern<T>` is a variable `x` or a field `exp.f` with `exp` of a non-Extern type, into `lhs = lhs'.op(v)`, where the copy `lhs'` is mapped to `lhs` (`DesugarOperatorOverloadExpr`, as for any operator overloading). The pass needs nothing special for it: `lhs'.op(v)` is a dynamic call, and `lhs'` is copied into its tree as a leaf, keeping the mapping.
+Sema rewrites `lhs op= v`, where `lhs: Extern<T>` is a variable `x` or a field `exp.f` with `exp` of a non-Extern type, into `lhs = lhs'.op(v)`, where the copy `lhs'` is mapped to `lhs` (`DesugarOperatorOverloadExpr`, as for any operator overloading). The pass desugars `lhs'.op(v)` into `T.functionCall(T.memberAccess(lhs', "op"), [v])`, recursively desugaring its operands and keeping the mapping so that the left-hand side is evaluated only once.
 
-##### Building the tree
+##### Compound assignment of a dynamic member or index
 
-`BuildTree` turns a dynamic node into a constructor call of `Extern<T>`, and applies itself to the operands. An operand that is not dynamic (a variable, a literal, a normal call, a lambda, ...) is copied unchanged into the tree, as a leaf:
+For `e.f op= v` or `e[i] op= v` with `e: Extern<T>`, the pass creates a block with the temporaries and runtime calls shown in [Compound Assignment](#compound-assignment), cases 2 and 3. The block has type `Unit`. The receiver and index are saved before reading the current value, looking up the operator, evaluating the right-hand side, calling the operator, and writing the result back. Dynamic subexpressions in the initializers and right-hand side are recursively desugared.
 
-```text
-BuildTree(x):
-    if x is not dynamic:
-        return clone(x)
-    match x:
-        e.f                  => ExternMemberAccess(BuildTree(e), "f")
-        e(a1, ..., an)       => ExternFunctionCall(BuildTree(e), [BuildTree(a1), ..., BuildTree(an)])
-        e[i]                 => ExternIndexedAccess(BuildTree(e), BuildTree(i))
-        e.f = v              => ExternMemberUpdate(BuildTree(e), "f", BuildTree(v))
-        e[i] = v             => ExternIndexedUpdate(BuildTree(e), BuildTree(i), BuildTree(v))
-        a op= v              => ExternCompoundAssignment(<tree of the access a>, "op", BuildTree(v))   // "+" for +=
-```
-
-#### 5.2.4. The generated calls
+#### 4.2.4. The generated calls
 
 The pass creates fully typed ASTs, which are not type checked again. The calls, their callees and the `Array` literal are marked `IMPLICIT_ADD`. The created nodes take the source position of the node they replace.
 
@@ -971,42 +946,42 @@ CallExpr [CALL_DECLARED_FUNCTION, resolvedFunction = toExtern, ty = Extern<T>]
    └─ e                     // its previous desugarExpr, or a clone of e
 ```
 
-##### `T.eval(tree)`
+##### `T.fromExtern<U>(e)`
 
 ```text
-CallExpr [CALL_DECLARED_FUNCTION, resolvedFunction = eval, ty = Extern<T>]
-├─ MemberAccess "eval" [target = eval, ty = (Extern<T>) -> Extern<T>]
+CallExpr [CALL_DECLARED_FUNCTION, resolvedFunction = fromExtern, ty = U]
+├─ MemberAccess "fromExtern" [target = fromExtern, instTys = {U}, ty = (Extern<T>) -> U]
 │  └─ RefExpr T [ty = T]
 └─ FuncArg [ty = Extern<T>]
-   └─ tree
+   └─ e                     // recursively desugared
 ```
 
-##### Tree nodes
+##### Dynamic runtime calls
 
-Every node of the tree is a call of a constructor of `Extern<T>`:
+Each dynamic operation produces a call to a static method `M` of runtime `T`:
 
 ```text
-CallExpr [CALL_DECLARED_FUNCTION, resolvedFunction = C, ty = Extern<T>]
-├─ RefExpr C [ty = the type of C with T substituted, e.g. (Extern<T>, String) -> Extern<T>]
-└─ FuncArg [ty = type of the argument] x one per parameter of C
+CallExpr [CALL_DECLARED_FUNCTION, resolvedFunction = M, ty = result type of M]
+├─ MemberAccess M [target = M, ty = the type of M with T substituted]
+│  └─ RefExpr T [ty = T]
+└─ FuncArg [ty = type of the argument] x one per parameter of M
 ```
 
-The arguments of each constructor:
+The arguments and result type of each call:
 
-| Constructor `C` | Arguments |
-|---|---|
-| `ExternMemberAccess` | `BuildTree(e)`; the name `f` as a `String` literal |
-| `ExternIndexedAccess` | `BuildTree(e)`; `BuildTree(i)` |
-| `ExternFunctionCall` | `BuildTree(e)`; an `Array<Any>` literal, with its constructor set, holding `BuildTree(a)` for each argument `a` |
-| `ExternMemberUpdate` | `BuildTree(e)`; the name `f` as a `String` literal; `BuildTree(v)` |
-| `ExternIndexedUpdate` | `BuildTree(e)`; `BuildTree(i)`; `BuildTree(v)` |
-| `ExternCompoundAssignment` | the constructor call for the access `e.f` or `e[i]`; the operator without `=` as a `String` literal (`"+"` for `+=`); `BuildTree(v)` |
+| Method `M` | Arguments | Result type |
+|---|---|---|
+| `memberAccess` | `DESUGAR(e)`; the name `f` as a `String` literal | `Extern<T>` |
+| `indexedAccess` | `DESUGAR(e)`; `DESUGAR(i)` | `Extern<T>` |
+| `functionCall` | `DESUGAR(e)`; an `Array<Any>` literal, with its constructor set, holding `DESUGAR(a)` for each argument `a` | `Extern<T>` |
+| `memberUpdate` | `DESUGAR(e)`; the name `f` as a `String` literal; `DESUGAR(v)` | `Unit` |
+| `indexedUpdate` | `DESUGAR(e)`; `DESUGAR(i)`; `DESUGAR(v)` | `Unit` |
 
-`BuildTree(x)` is a nested constructor call of type `Extern<T>` only when `x` is dynamic. Otherwise it is a clone of `x`, with its own type, even where the parameter is `Any`.
+Operands retain their own types, even where the parameter is `Any`. Passing them to these calls does not introduce `toExtern` conversions.
 
-### 5.3. Helpers
+### 4.3. Helpers
 
-- `Ty::IsCoreExternType()` in [Types.h](https://github.com/CJPLUK/cangjie_compiler/compare/799e9f6545cc8a83355c5d77e777f8f571215815...feature_extern_with_enum#diff-3b8d62be89ea010deabfa27a2963b2eb9195449fd5a32af7d011b8d811dfacb9) / [Types.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/799e9f6545cc8a83355c5d77e777f8f571215815...feature_extern_with_enum#diff-669d698eb4a81aeb7ba1facd78340406f469343c213f9cd1bc1dfe9d81d54cc0): an enum of the core package named `Extern` with one type argument. It uses the new constants `STD_LIB_EXTERN` and `STD_LIB_FOREIGN_RUNTIME` from [ConstantsUtils.h](https://github.com/CJPLUK/cangjie_compiler/compare/799e9f6545cc8a83355c5d77e777f8f571215815...feature_extern_with_enum#diff-1dd21a2c4e972bc02b089d934e8abaf6258281e9146ffcbf3ec6cca3c5d25d85).
+- `Ty::IsCoreExternType()` in [Types.h](https://github.com/CJPLUK/cangjie_compiler/compare/799e9f6545cc8a83355c5d77e777f8f571215815...feature_extern_with_enum#diff-3b8d62be89ea010deabfa27a2963b2eb9195449fd5a32af7d011b8d811dfacb9) / [Types.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/799e9f6545cc8a83355c5d77e777f8f571215815...feature_extern_with_enum#diff-669d698eb4a81aeb7ba1facd78340406f469343c213f9cd1bc1dfe9d81d54cc0): a struct of the core package named `Extern` with one type argument. It uses the new constants `STD_LIB_EXTERN` and `STD_LIB_FOREIGN_RUNTIME` from [ConstantsUtils.h](https://github.com/CJPLUK/cangjie_compiler/compare/799e9f6545cc8a83355c5d77e777f8f571215815...feature_extern_with_enum#diff-1dd21a2c4e972bc02b089d934e8abaf6258281e9146ffcbf3ec6cca3c5d25d85).
 
 - `NeedExternConversion(from, to)` in [TypeCheckerImpl.h](https://github.com/CJPLUK/cangjie_compiler/compare/799e9f6545cc8a83355c5d77e777f8f571215815...feature_extern_with_enum#diff-5480a3f19492392ecda43d2cc60b2ababa30f16c4b7c70d23670a4c7a45cc1bc) / [TypeChecker.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/799e9f6545cc8a83355c5d77e777f8f571215815...feature_extern_with_enum#diff-82ac4d96ac0e1970552e95b7d95d2a768441f87b06ac3fdfbff63a80f7b3d258), shared by Sema and the desugaring:
   ```cpp
@@ -1016,7 +991,7 @@ The arguments of each constructor:
 - Dynamic-node predicates in [TypeCheckUtil.h](https://github.com/CJPLUK/cangjie_compiler/compare/799e9f6545cc8a83355c5d77e777f8f571215815...feature_extern_with_enum#diff-4863ec66d1d7b07c5185cd4285a265ffe2773f6dd5d8ddb6b49dc8bd94cd6385) / [TypeCheckUtil.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/799e9f6545cc8a83355c5d77e777f8f571215815...feature_extern_with_enum#diff-d2d99371d589d2068ddf92784b2b3a3e5db6df68c68fab7d68c804e9ad67f152), shared by Sema and the desugaring:
   ```cpp
   // e is a value of type Extern<T>, not the type name Extern<T> itself
-  // (so Extern<T>.ExternPayload(v) is a normal enum constructor call, not a dynamic access)
+  // (so Extern<T>.getPayload(e) is a normal static call, not a dynamic access)
   bool IsExternValue(const Expr& e);
 
   // ma is a read of any member f of an Extern<T> value e: e.f
@@ -1031,6 +1006,41 @@ The arguments of each constructor:
   // e.f = v, e[i] = v, e.f op= v, e[i] op= v
   bool IsDynamicExternUpdate(const AssignExpr& ae);
   ```
+
+---
+
+## 5. Runtime implementer possible optimizations
+
+### Possible optimization 1: intern field names
+
+```cangjie
+e.foo
+e.foo
+// T.memberAccess(e, "foo")
+// T.memberAccess(e, "foo")
+```
+
+A naive `memberAccess` converts the Cangjie string `"foo"` into a foreign string on every access. Interning it as a reusable foreign string removes that conversion from all later accesses of the same field name.
+
+### Possible optimization 2: cache converted strings
+
+```cangjie
+let e1: Extern<T> = "foo"
+let e2: Extern<T> = "foo"
+// T.toExtern<String>("foo")
+// T.toExtern<String>("foo")
+```
+
+A naive `toExtern` allocates and converts the same Cangjie string twice. Caching the foreign string keyed by the Cangjie value turns the second conversion into a lookup; the dual is `fromExtern<String>(e)` on the same immutable foreign string.
+
+### Possible optimization 3: bulk conversion of aggregates
+
+```cangjie
+let a: Extern<T> = [1, 2, 3]
+// T.toExtern<Array<Int64>>([1, 2, 3])
+```
+
+A naive `toExtern` builds the foreign array one element at a time. Copying the buffer in one go costs a single FFI call for the whole array; the dual is `(Array<Int64>)a` in `fromExtern`.
 
 ---
 
