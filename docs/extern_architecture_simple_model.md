@@ -539,24 +539,24 @@ let y: Extern<R> = match (n) {
 
 ##### Dynamic Extern expression desugaring
 
-The desugaring of `Extern` expressions is performed according to the `DESUGAR` function defined below. Each dynamic operation becomes a direct static call to the corresponding `ForeignRuntime<T>` function.
+The desugaring of `Extern` expressions is performed according to the `DESUGAR` function defined below, where `~>` means "is defined as". Each dynamic operation becomes a direct static call to the corresponding `ForeignRuntime<T>` function.
 
 ```cangjie
-DESUGAR((U)exp) =
+DESUGAR((U)exp) ~>
     T.fromExtern<U>(DESUGAR(exp))
-DESUGAR(e1.f) = // if e1 has type Extern<T>
+DESUGAR(e1.f) ~> // if e1 has type Extern<T>
     T.memberAccess(DESUGAR(e1), "f")
-DESUGAR(e1.f = e2) = // if e1 has type Extern<T>
+DESUGAR(e1.f = e2) ~> // if e1 has type Extern<T>
     T.memberUpdate(DESUGAR(e1), "f", DESUGAR(e2))
-DESUGAR(e1[i]) = // if e1 has type Extern<T>
+DESUGAR(e1[i]) ~> // if e1 has type Extern<T>
     T.indexedAccess(DESUGAR(e1), DESUGAR(i))
-DESUGAR(e1[i] = e2) = // if e1 has type Extern<T>
+DESUGAR(e1[i] = e2) ~> // if e1 has type Extern<T>
     T.indexedUpdate(DESUGAR(e1), DESUGAR(i), DESUGAR(e2))
-DESUGAR(e1(e2, e3, ...)) = // if e1 has type Extern<T>
+DESUGAR(e1(e2, e3, ...)) ~> // if e1 has type Extern<T>
     T.functionCall(DESUGAR(e1), [DESUGAR(e2), DESUGAR(e3), ...])
-DESUGAR(base) = // expressions without smaller subexpressions are preserved as they are
+DESUGAR(base) ~> // expressions without smaller subexpressions are preserved as they are
     base
-DESUGAR(exp) = // otherwise, preserve structure and desugar subexpressions
+DESUGAR(exp) ~> // otherwise, preserve structure and desugar subexpressions
     MAP(DESUGAR, exp)
 ```
 
@@ -572,7 +572,7 @@ Example 1:
 For `e1: Extern<T>`.
 
 ```cangjie
-DESUGAR(e1.x.y) = T.memberAccess(T.memberAccess(e1, "x"), "y")
+DESUGAR(e1.x.y) ~> T.memberAccess(T.memberAccess(e1, "x"), "y")
 ```
 
 Example 2:
@@ -580,7 +580,7 @@ Example 2:
 For `e1, e2: Extern<T>`.
 
 ```cangjie
-DESUGAR(e1.x.y = e2.z) =
+DESUGAR(e1.x.y = e2.z) ~>
     T.memberUpdate(
         T.memberAccess(e1, "x"),
         "y",
@@ -593,7 +593,7 @@ Example 3:
 For `e1, e2: Extern<T>`.
 
 ```cangjie
-DESUGAR(e1.x += e2) =
+DESUGAR(e1.x += e2) ~>
     let tmp1 = e1
     let tmp2 = T.memberAccess(T.memberAccess(tmp1, "x"), "+")
     T.memberUpdate(tmp1, "x", T.functionCall(tmp2, [e2]))
@@ -604,7 +604,7 @@ Example 4:
 For `e1, e2: Extern<T>`.
 
 ```cangjie
-DESUGAR(e1.a[e2.b]) =
+DESUGAR(e1.a[e2.b]) ~>
     T.indexedAccess(
         T.memberAccess(e1, "a"),
         T.memberAccess(e2, "b")
@@ -616,7 +616,7 @@ Example 5:
 For `e1, e2, e3: Extern<T>`.
 
 ```cangjie
-DESUGAR(e1.a[e2.b] = e3.c) =
+DESUGAR(e1.a[e2.b] = e3.c) ~>
     T.indexedUpdate(
         T.memberAccess(e1, "a"),
         T.memberAccess(e2, "b"),
@@ -629,7 +629,7 @@ Example 6:
 For `e1, e2, e3: Extern<T>`.
 
 ```cangjie
-DESUGAR(e1.a[e2].b -= e3.c) =
+DESUGAR(e1.a[e2].b -= e3.c) ~>
     let tmp1 = T.indexedAccess(T.memberAccess(e1, "a"), e2)
     let tmp2 = T.memberAccess(T.memberAccess(tmp1, "b"), "-")
     T.memberUpdate(tmp1, "b", T.functionCall(tmp2, [T.memberAccess(e3, "c")]))
@@ -640,7 +640,7 @@ Example 7:
 For `e1, e2, e3: Extern<T>`, `n: Int64`.
 
 ```cangjie
-DESUGAR(e1.a.b(e2.c, e3[0], n + 1)) =
+DESUGAR(e1.a.b(e2.c, e3[0], n + 1)) ~>
     T.functionCall(
         T.memberAccess(T.memberAccess(e1, "a"), "b"),
         [ T.memberAccess(e2, "c"),
@@ -655,9 +655,9 @@ Example 8:
 For a variable `x: Extern<T>` and a function `foo(): C`, where `C` has a field `f: Extern<T>`.
 
 ```cangjie
-DESUGAR(x += 1)       =
+DESUGAR(x += 1)       ~>
     x = T.functionCall(T.memberAccess(x, "+"), [1])
-DESUGAR(foo().f *= 2) = 
+DESUGAR(foo().f *= 2) ~>
     foo().f = T.functionCall(T.memberAccess(foo`.f, "*"), [2])   // foo() is evaluated once, foo` is a reference for foo()
 ```
 
