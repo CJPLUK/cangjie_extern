@@ -3,11 +3,10 @@
 This document specifies a generic `ArkTSRuntime<T>` foreign-runtime abstraction for accessing
 ArkTS/JS values from Cangjie.
 
-**Background.** `Extern<T>` represents either an evaluated value in a *foreign memory
-space* or a deferred operation on a foreign runtime. It is a recursive enum whose leaf is
-`ExternPayload(Any)` and whose other variants describe member access, indexed access,
-updates, compound assignments, and calls. The compiler builds these trees from dynamic
-syntax and passes them to `T.eval`. The type parameter `T` implements `ForeignRuntime<T>`;
+**Background.** As specified in [the simple extern model](extern_architecture_simple_model.md),
+`Extern<T>` represents a value in a *foreign memory space*. It is a struct holding an opaque
+`Any` payload, accessible through `Extern<T>.getPayload`. The compiler lowers dynamic
+syntax to direct static calls on `T`. The type parameter `T` implements `ForeignRuntime<T>`;
 `ArkTS<T>` supplies the ArkTS implementation for concrete, self-typed runtime classes.
 
 Version 1 uses `ohos.ark_interop` as its backend. A later version will replace that backend
@@ -15,15 +14,15 @@ with direct Cangjie FFI bindings to OpenHarmony's native `ARKTS_*` interface.
 
 ## 1. Layering
 
-User-facing dynamic syntax on `Extern<T>` never calls the VM directly. The compiler builds
-an `Extern<T>` expression tree and passes it to `T.eval`. `ArkTS<T>` evaluates the complete
-tree through the thread-safe `run` wrapper and stores evaluated values as an internal
-`ArkTSHandle` inside `ExternPayload`. This version goes through `ohos.ark_interop`; later versions
+User-facing dynamic syntax on `Extern<T>` never calls the VM directly. The compiler calls
+the corresponding `ForeignRuntime<T>` method for each operation. `ArkTS<T>` performs each
+operation through the thread-safe `run` wrapper and stores values as an internal
+`ArkTSHandle` inside the `Extern<T>` payload. This version goes through `ohos.ark_interop`; later versions
 will call the `ARKTS_*` FFI functions directly.
 
 ```mermaid
 flowchart TB
-    UC["User:<br/><br/> e.f / e(...) / e[i]"] --> DS["cjc<br/><br/> build Extern **tree**<br/>ArkTS.eval(**tree**)"]
+    UC["User:<br/><br/> e.f / e(...) / e[i]"] --> DS["cjc<br/><br/> direct ForeignRuntime calls"]
     DS --> ARK["ArkTS&lt;T&gt; <: ForeignRuntime&lt;T&gt;"]
     ARK -->|"v1"| CTX["ohos.ark_interop"] --> FFI["ARKTS_*"] --> VM["ArkTS VM"]
     ARK -.->|"v2"| FFI
@@ -48,21 +47,21 @@ ArkTS.bind(context)                  // bind this runtime instance at entry
 
 // ...
 
-let blob = ArkTS.eval(
-    ExternFunctionCall(ExternMemberAccess(api, "createRectangle"), []))
+let blob = ArkTS.functionCall(ArkTS.memberAccess(api, "createRectangle"), [])
 
-ArkTS.eval(ExternMemberUpdate(blob, "width", 3.0))
+ArkTS.memberUpdate(blob, "width", 3.0)
 
-ArkTS.eval(ExternCompoundAssignment(
-    ExternMemberAccess(blob, "width"), "+", 2.0))
+let $tmp1 = blob
+let $tmp2 = ArkTS.memberAccess(ArkTS.memberAccess($tmp1, "width"), "+")
+ArkTS.memberUpdate($tmp1, "width", ArkTS.functionCall($tmp2, [2.0]))
 
 let a: Float64 = ArkTS.fromExtern<Float64>(
-                    ExternFunctionCall(ExternMemberAccess(blob, "area"), [])
+                    ArkTS.functionCall(ArkTS.memberAccess(blob, "area"), [])
                  )
 ```
 
-The assigned `3.0` and compound right operand `2.0` remain `Any` operands in their trees
-and are converted by the ArkTS evaluator when it performs each operation.
+The assigned `3.0` and compound right operand `2.0` are passed as `Any` operands
+and are converted by the ArkTS runtime when it performs each operation.
 
 ## 2. `ArkTSRuntime<T>` interface
 
@@ -75,8 +74,12 @@ abstract public class ArkTSRuntime<T> <: ForeignRuntime<T> where T <: ArkTSRunti
     // Associate this runtime specialization with one JS context.
     public static func bind(newContext: JSContext): Unit
 
-    // Evaluate an Extern expression tree.
-    public static func eval(tree: Extern<T>): Extern<T>
+    // Perform dynamic operations.
+    public static func memberAccess(e: Extern<T>, field: String): Extern<T>
+    public static func indexedAccess(e: Extern<T>, arg: Any): Extern<T>
+    public static func memberUpdate(e: Extern<T>, field: String, value: Any): Unit
+    public static func indexedUpdate(e: Extern<T>, field: Any, value: Any): Unit
+    public static func functionCall(e: Extern<T>, args: Array<Any>): Extern<T>
 
     // Convert between Cangjie and ArkTS values.
     public static func fromExtern<R>(value: Extern<T>): R
@@ -115,7 +118,7 @@ abstract public class ArkTSRuntime<T> <: ForeignRuntime<T> where T <: ArkTSRunti
 }
 ```
 
-The `eval`, `fromExtern`, and `toExtern` methods form the compiler-facing
+The five dynamic-operation methods, `fromExtern`, and `toExtern` form the compiler-facing
 `ForeignRuntime<T>` contract. The remaining methods are ArkTS-specific entry points used
 directly by applications and generated bindings.
 
@@ -138,7 +141,7 @@ runtimes, such as `ArkTS1 <: ArkTSRuntime<ArkTS1>` and `ArkTS2 <: ArkTSRuntime<A
 their values: `Extern<ArkTS1>` and `Extern<ArkTS2>` are different types. The first
 successful call to `bind` permanently installs the context for that specialization. Every
 later call throws `ArkTSContextAlreadyBoundException`, even if it supplies the same
-`JSContext`. The evaluator and helpers read the installed context through the private
+`JSContext`. The dynamic operations and helpers read the installed context through the private
 `context` property, which throws if the runtime was never bound.
 
 ```cangjie
@@ -194,9 +197,9 @@ to be visible must wait until `bind` has completed before using the runtime.
 ## 4. Thread dispatch
 
 ArkTS FFI is *bind-thread-affine*: engine calls are valid only on the thread that bound the
-context (the JS thread). Each `eval` call and public helper therefore runs its engine work
+context (the JS thread). Each dynamic operation and public helper therefore runs its engine work
 inside `run`, which looks synchronous to the caller regardless of which Cangjie thread
-called it. Recursive evaluation stays inside that single `run` invocation.
+called it. A compound expression invokes `run` separately for each operation.
 
 If `run` is called on the bind thread, it executes the operation directly, otherwise it posts the operation to the JS thread and blocks the caller until the
 result is available.
@@ -270,29 +273,30 @@ library.
 
 ## 5. Handle model
 
-`Extern<T>` is the expression tree defined by the standard library:
+`Extern<T>` is the payload struct defined by the standard library:
 
 ```cangjie
-public enum Extern<T> where T <: ForeignRuntime<T> {
-    | ExternPayload(Any)
-    | ExternMemberAccess(Extern<T>, String)
-    | ExternIndexedAccess(Extern<T>, Any)
-    | ExternMemberUpdate(Extern<T>, String, Any)
-    | ExternIndexedUpdate(Extern<T>, Any, Any)
-    | ExternFunctionCall(Extern<T>, Array<Any>)
-    | ExternCompoundAssignment(Extern<T>, String, Any)
-    // derived constructors
-    | ...
+public struct Extern<T> where T <: ForeignRuntime<T> {
+    private var payload: Any = ()
+
+    public Extern(payload: Any) {
+        setExtern(this, payload)
+    }
+    public static func getPayload(e: Extern<T>): Any {
+        getExtern(e)
+    }
 }
 ```
 
-For `T <: ArkTSRuntime<T>`, an evaluated `Extern<T>` is a `ExternPayload` containing an
-`ArkTSHandle`:
+The core intrinsics `getExtern` and `setExtern` read and write the payload directly,
+bypassing dynamic member-access/update desugaring. For `T <: ArkTSRuntime<T>`, the payload
+is an `ArkTSHandle`:
 
 ```cangjie
 private enum ArkTSHandle {
     | Imm(JSValue)      // undefined / null / boolean / number
     | Ref(JSHeapObject) // string / bigint / symbol / object / array / function / ...
+    | BoundMethod(JSFunction, ArkTSHandle) // callable member + its retained receiver
 }
 ```
 
@@ -300,156 +304,130 @@ private enum ArkTSHandle {
 | --- | --- | --- |
 | `Imm` | a `JSValue` | Immediates have no heap identity, so the value is stored as-is. |
 | `Ref` | a `JSHeapObject` | Heap values are pinned as an engine-global so they survive across calls. |
+| `BoundMethod` | a `JSFunction` and its receiver handle | A callable property remembers the receiver to use as `this` on a later call. |
 
 `JSHeapObject` finalizers queue `ARKTS_DisposeGlobal` for execution on the context's bind
 thread, so the finalizers themselves may run on any thread.
 
-### Wrapping a JSValue as an Extern
-
-`retain` is the single entry that turns a `JSValue` produced by the engine into an
-evaluated `Extern`. It inspects the runtime type, promotes heap values to global handles,
-and wraps the resulting `ArkTSHandle` in `ExternPayload`.
+Two helpers read the payload and project its handle to a `JSValue` on the bind thread:
 
 ```cangjie
-private static func retain(value: JSValue): Extern<T> {
-    if (value.isFunction()) { return ExternPayload(Ref(value.asFunction())) }
-    if (value.isArray())   { return ExternPayload(Ref(value.asArray()))  }
-    if (value.isSymbol())  { return ExternPayload(Ref(value.asSymbol())) }
-    if (value.isString())  { return ExternPayload(Ref(value.asString())) }
-    if (value.isBigInt())  { return ExternPayload(Ref(value.asBigInt())) }
-    if (value.isObject())  { return ExternPayload(Ref(value.asObject())) }
-    ExternPayload(Imm(value))     // undefined / null / boolean / number: engine immediates
+private static func getHandle(e: Extern<T>): ArkTSHandle {
+    (Extern<T>.getPayload(e) as ArkTSHandle).getOrThrow()
+}
+
+private static func jsValue(handle: ArkTSHandle): JSValue {
+    match (handle) {
+        case Imm(value) => value
+        case Ref(owner) => owner.toJSValue()
+        case BoundMethod(function, _) => function.toJSValue()
+    }
 }
 ```
 
-Heap values are made global only when `retain` produces the final result of an evaluation
-or helper call. Intermediate values remain local to the evaluation. This lets users keep
-evaluated `Extern` values without manually retaining them through operations such as
-`value.asObject()`.
+### Wrapping a JSValue as an Extern
+
+`retain` is the single entry that turns a `JSValue` produced by the engine into an
+`Extern`. It inspects the runtime type, promotes heap values to global handles,
+and wraps the resulting `ArkTSHandle` in `Extern<T>`. An optional receiver is saved
+when the value is a function.
+
+```cangjie
+private static func retain(value: JSValue, receiver!: ?ArkTSHandle = None): Extern<T> {
+    if (value.isFunction()) {
+        let function = value.asFunction()
+        return match (receiver) {
+            case Some(target) => Extern<T>(BoundMethod(function, target))
+            case None => Extern<T>(Ref(function))
+        }
+    }
+    if (value.isArray())   { return Extern<T>(Ref(value.asArray()))  }
+    if (value.isSymbol())  { return Extern<T>(Ref(value.asSymbol())) }
+    if (value.isString())  { return Extern<T>(Ref(value.asString())) }
+    if (value.isBigInt())  { return Extern<T>(Ref(value.asBigInt())) }
+    if (value.isObject())  { return Extern<T>(Ref(value.asObject())) }
+    Extern<T>(Imm(value))     // undefined / null / boolean / number: engine immediates
+}
+```
+
+Every heap value returned by a dynamic operation or helper must survive its `run` scope,
+including intermediate results in a chain such as `a.b.c`. `retain` makes those values
+global. This lets users keep `Extern` values without manually retaining them through
+operations such as `value.asObject()`.
 
 ## 6. Dynamic operations
 
-The compiler represents dynamic syntax as nested `Extern<T>` nodes and calls `T.eval` once
-for the complete expression:
+The compiler lowers each dynamic operation to a direct static call:
 
 ```cangjie
-e.f                   → T.eval(ExternMemberAccess(e, "f"))
-e[i]                  → T.eval(ExternIndexedAccess(e, i))
-e.f = v               → T.eval(ExternMemberUpdate(e, "f", v))
-e[i] = v              → T.eval(ExternIndexedUpdate(e, i, v))
-e(a, b)               → T.eval(ExternFunctionCall(e, [a, b]))
-e.f += v              → T.eval(ExternCompoundAssignment(ExternMemberAccess(e, "f"), "+", v))
-e[i] &&= v            → T.eval(ExternCompoundAssignment(ExternIndexedAccess(e, i), "&&", v))
+e.f                   → T.memberAccess(e, "f")
+e[i]                  → T.indexedAccess(e, i)
+e.f = v               → T.memberUpdate(e, "f", v)
+e[i] = v              → T.indexedUpdate(e, i, v)
+e(a, b)               → T.functionCall(e, [a, b])
 
-a.b.c                 → T.eval(ExternMemberAccess(ExternMemberAccess(a, "b"), "c"))
-a.m(10)               → T.eval(ExternFunctionCall(ExternMemberAccess(a, "m"), [10]))
+a.b.c                 → T.memberAccess(T.memberAccess(a, "b"), "c")
+a.m(10)               → T.functionCall(T.memberAccess(a, "m"), [10])
 
-a.b(42).c = d.e().f() → T.eval(
-    ExternMemberUpdate(
-        ExternFunctionCall(
-            ExternMemberAccess(a, "b"),
-            [42]
-        ),
-        "c",
-        ExternFunctionCall(
-            ExternMemberAccess(
-                ExternFunctionCall(
-                    ExternMemberAccess(
-                        d,
-                        "e"
-                    ),
-                    []
-                ),
-                "f"
-            ),
-            []
-        )
+a.b(42).c = d.e().f() → T.memberUpdate(
+    T.functionCall(T.memberAccess(a, "b"), [42]),
+    "c",
+    T.functionCall(
+        T.memberAccess(T.functionCall(T.memberAccess(d, "e"), []), "f"),
+        []
     )
 )
 ```
 
-For a primitive operation, `eval` enters
-`run` once, evaluates the operation to a `JSValue`, and retains its result. `evalTree`
-performs the same operations recursively, so top-level and nested primitive operations
-have identical semantics while only the top-level result is retained. An existing `ExternPayload` is already
-evaluated and can be returned unchanged. A derived constructor is delegated to the
-standard `Extern<T>.evalDerived` implementation, as required by the
-`ForeignRuntime` contract.
+Arguments, indices, and update values retain their Cangjie types and are passed through
+`Any`; dynamic subexpressions are evaluated before the receiving method is called.
+Each method enters `run` once. Reads and calls retain their result; updates return `Unit`.
 
 ```cangjie
-public static func eval(tree: Extern<T>): Extern<T> {
-    match (tree) {
-        case ExternPayload(_) => tree
-        case ExternMemberAccess(target, field) =>
-            run { retain(evalTree(target).getProperty(field)) }
-        case ExternIndexedAccess(target, index) =>
-            run { retain(readIndex(evalTree(target), index)) }
-        case ExternMemberUpdate(target, field, value) =>
-            run { retain(evalMemberUpdate(target, field, value)) }
-        case ExternIndexedUpdate(target, index, value) =>
-            run { retain(evalIndexedUpdate(target, index, value)) }
-        case ExternFunctionCall(callee, arguments) =>
-            run { retain(call(callee, arguments)) }
-        case ExternCompoundAssignment(target, op, value) =>
-            run { retain(evalCompoundAssignment(target, op, value)) }
-        case _ => Extern<T>.evalDerived(tree)
+public static func memberAccess(e: Extern<T>, field: String): Extern<T> {
+    run {
+        let handle = getHandle(e)
+        let receiver = jsValue(handle)
+        let value = if (isSupportedOperator(field)) {
+            operatorFunction(field).toJSValue()
+        } else {
+            receiver.getProperty(field)
+        }
+        retain(value, receiver: Some(handle))
     }
 }
 
-private static func evalTree(tree: Extern<T>): JSValue {
-    match (tree) {
-        case ExternPayload(handle) => evalPayload(handle)
-        case ExternMemberAccess(target, field) =>
-            evalTree(target).getProperty(field)
-        case ExternIndexedAccess(target, index) =>
-            readIndex(evalTree(target), index)
-        case ExternMemberUpdate(target, field, value) =>
-            evalMemberUpdate(target, field, value)
-        case ExternIndexedUpdate(target, index, value) =>
-            evalIndexedUpdate(target, index, value)
-        case ExternFunctionCall(callee, arguments) =>
-            call(callee, arguments)
-        case ExternCompoundAssignment(target, op, value) =>
-            evalCompoundAssignment(target, op, value)
-        case _ =>
-            evalTree(Extern<T>.evalDerived(tree))
+public static func indexedAccess(e: Extern<T>, arg: Any): Extern<T> {
+    run {
+        let handle = getHandle(e)
+        retain(readIndex(jsValue(handle), arg), receiver: Some(handle))
     }
 }
 
-private static func evalPayload(handle: Any): JSValue {
-    match ((handle as ArkTSHandle).getOrThrow()) {
-        case Imm(value) => value
-        case Ref(owner) => owner.toJSValue()
-    }
+public static func memberUpdate(e: Extern<T>, field: String, value: Any): Unit {
+    run { jsValue(getHandle(e)).setProperty(field, toJSValue(value)) }
 }
 
-private static func evalMemberUpdate(target: Extern<T>, field: String, value: Any): JSValue {
-    let receiver = evalTree(target)
-    receiver.setProperty(field, toJSValue(value))
-    context.undefined().toJSValue()
+public static func indexedUpdate(e: Extern<T>, field: Any, value: Any): Unit {
+    run { writeIndex(jsValue(getHandle(e)), field, value) }
 }
-
-private static func evalIndexedUpdate(target: Extern<T>, index: Any, value: Any): JSValue {
-    let receiver = evalTree(target)
-    writeIndex(receiver, index, value)
-    context.undefined().toJSValue()
-}
-
 ```
 
-When a derived constructor is nested inside a primitive tree, `evalTree` delegates that
-subtree to `evalDerived` and projects the evaluated `Extern<T>` result back to a local
-`JSValue`.
+For supported operator names, `operatorFunction` supplies a runtime-owned function
+that preserves primitive `this` values and applies the operator to `this` and its argument,
+for example `this + argument` for `"+"`. `isSupportedOperator` selects these names;
+they are not ordinary JS properties.
+Call arguments are already evaluated, including for `"&&"` and `"||"`.
 
 ### Indexed access
 
 Index operations accept an integer position, a `String` property name, or an `Extern<T>`
-from the same runtime. The `Extern<T>` is a tree node like any other, so it may be an
-unevaluated expression; `toJSKeyable` reduces it with `evalTree`, and maps the result onto one of the `JSKeyable` types accepted
-by `getProperty` and `setProperty`: a string becomes a `JSString`, a symbol a `JSSymbol`,
+from the same runtime. `toJSKeyable` projects its payload to a `JSValue`, and maps it onto
+one of the `JSKeyable` types accepted by `getProperty` and `setProperty`: a string becomes
+a `JSString`, a symbol a `JSSymbol`,
 and a number a `Float64`. `writeIndex` resolves this key before converting the assigned
-value, preserving target–index–value evaluation order. Compound assignment uses the same
-index conversion.
+value. Operand expressions have already followed Cangjie evaluation order before the
+runtime call.
 
 ```cangjie
 private static func readIndex(target: JSValue, index: Any): JSValue {
@@ -476,7 +454,7 @@ private static func writeIndex(target: JSValue, index: Any, value: Any): Unit {
 }
 
 private static func toJSKeyable(index: Extern<T>): JSKeyable {
-    let value = evalTree(index)
+    let value = jsValue(getHandle(index))
     if (value.isString()) { return value.asString() }  // JSString
     if (value.isSymbol()) { return value.asSymbol() }  // JSSymbol
     if (value.isNumber()) { return value.toNumber() }  // Float64
@@ -486,43 +464,42 @@ private static func toJSKeyable(index: Extern<T>): JSKeyable {
 
 ### Calls and receivers
 
-The call tree retains the distinction between a member call and a call through an already
-evaluated function. `call` uses the target of a `ExternMemberAccess` or `ExternIndexedAccess` as
-`this`; every other callee receives `undefined`. The target is evaluated exactly once.
+`functionCall` receives only a callee value and its arguments, so it cannot distinguish
+a member call from a call through an extracted function. To preserve method calls,
+`memberAccess` and `indexedAccess` return a `BoundMethod` for callable properties, retaining
+both the function and the receiver. Extracted methods therefore keep their receiver,
+unlike bare JS. Functions obtained without a receiver receive `undefined` as `this`.
 
 ```cangjie
-a.m(10)           // ExternFunctionCall(ExternMemberAccess(a, "m"), [10]): this = a
+a.m(10)           // functionCall(memberAccess(a, "m"), [10]): this = a
 
 let x = a.m
-x(20)             // ExternFunctionCall(x, [20]): this = undefined
+x(20)             // functionCall(x, [20]): this = a
 ```
 
 ```cangjie
-private static func call(callee: Extern<T>, arguments: Array<Any>): JSValue {
-    match (callee) {
-        case ExternMemberAccess(receiver, field) =>
-            let target = evalTree(receiver)
-            let function = target.getProperty(field).asFunction()
-            let converted = Array<JSValue>(arguments.size) { index =>
-                toJSValue(arguments[index])
-            }
-            function.call(converted, thisArg: target)
-        case ExternIndexedAccess(receiver, index) =>
-            let target = evalTree(receiver)
-            let function = readIndex(target, index).asFunction()
-            let converted = Array<JSValue>(arguments.size) { i =>
-                toJSValue(arguments[i])
-            }
-            function.call(converted, thisArg: target)
-        case _ =>
-            let function = evalTree(callee).asFunction()
-            let converted = Array<JSValue>(arguments.size) { index =>
-                toJSValue(arguments[index])
-            }
-            function.call(converted, thisArg: context.undefined().toJSValue())
+public static func functionCall(e: Extern<T>, args: Array<Any>): Extern<T> {
+    run {
+        let handle = getHandle(e)
+        let value = jsValue(handle)
+        if (!value.isFunction()) {
+            throw ExternFunctionAccessException("ArkTS value is not callable")
+        }
+        let function = value.asFunction()
+        let receiver = match (handle) {
+            case BoundMethod(_, target) => jsValue(target)
+            case _ => context.undefined().toJSValue()
+        }
+        let converted = Array<JSValue>(args.size) { index =>
+            toJSValue(args[index])
+        }
+        retain(function.call(converted, thisArg: receiver))
     }
 }
 ```
+
+The saved receiver is metadata for Cangjie dynamic calls. Projecting a `BoundMethod`
+through `jsValue` yields the original function, without creating a JS bound function.
 
 Example flow for `obj.m(10)`:
 
@@ -531,9 +508,10 @@ sequenceDiagram
     participant U as User
     participant A as ArkTSRuntime<T>
     participant O as ark_interop
-    U->>A: eval(ExternFunctionCall(ExternMemberAccess(obj,"m"),[10]))
-    A->>O: evaluate obj once
+    U->>A: memberAccess(obj,"m")
     A->>O: obj.getProperty("m")
+    A-->>U: BoundMethod(m, getHandle(obj))
+    U->>A: functionCall(method,[10])
     A->>O: m.call([10], thisArg:obj)
     A-->>U: retain(result)
 ```
@@ -571,14 +549,14 @@ For each supported `U`, `V` denotes its mapped ArkTS type.
 ### `toJSValue`: Cangjie value → `JSValue`
 
 This bind-thread helper converts assigned values, call arguments, indexes, and values passed
-to `toExtern`. An `Extern<T>` input is reduced with `evalTree`, so it may be an unevaluated
-expression node. Other values are converted according to their runtime type. The `Imm`/`Ref`
+to `toExtern`. An `Extern<T>` input is projected through `jsValue(getHandle(...))`.
+Other values are converted according to their runtime type. The `Imm`/`Ref`
 decision is deferred to `retain`.
 
 ```cangjie
 private static func toJSValue(value: Any): JSValue {
     match (value) {
-        case external: Extern<T> => evalTree(external)
+        case external: Extern<T> => jsValue(getHandle(external))
         case boolean: Bool    => context.boolean(boolean).toJSValue()
         case number: Int32    => context.number(number).toJSValue()
         case number: Float64  => context.number(number).toJSValue()
@@ -598,8 +576,7 @@ private static func toJSValue(value: Any): JSValue {
 
 Notes:
 
-- An `Extern<T>` from the same concrete runtime goes through `evalTree`: an evaluated
-  payload is projected without a copy, and an unevaluated node is evaluated first.
+- An `Extern<T>` from the same concrete runtime has its payload projected without a copy.
   An `Extern` belonging to another ArkTSRuntime specialization does not match this branch.
 - `Int64` and `UInt64` become big ints.
 - `Option<U>` maps `Some` through `toJSValue` and maps `None` to `undefined`.
@@ -607,23 +584,29 @@ Notes:
 
 ### `toExtern`: Cangjie value → `Extern<T>`
 
-The implicit-conversion `toExtern` simply calls `toJSValue` and `retain`s the value.
+The implicit-conversion `toExtern` calls `toJSValue` and `retain`s the value. An existing
+`Extern<T>` is returned unchanged, preserving any saved receiver.
 
 ```cangjie
 public static func toExtern<R>(value: R): Extern<T> {
-    run { retain(toJSValue(value)) }
+    run {
+        match (value) {
+            case external: Extern<T> => external
+            case _ => retain(toJSValue(value))
+        }
+    }
 }
 ```
 
 ### `fromExtern`: `Extern<T>` → Cangjie type `R`
 
-The forced-cast hook `(R)e` reduces its argument with `evalTree`, so it accepts a payload
-as well as an unevaluated node, then uses the `ark_interop` reader for target type `R`.
+The forced-cast hook `(R)e` projects its argument's payload to a `JSValue`, then uses
+the `ark_interop` reader for target type `R`.
 
 ```cangjie
 public static func fromExtern<R>(e: Extern<T>): R {
     run {
-        let value = evalTree(e)
+        let value = jsValue(getHandle(e))
         match (None<R>) {    // dummy `None<R>` to match the type parameter
             case _: Option<Bool>    => (value.toBoolean() as R).getOrThrow()
             case _: Option<Int32>   => (Int32(value.toNumber()) as R).getOrThrow()   // read JS number, narrow to Int32
@@ -637,7 +620,7 @@ public static func fromExtern<R>(e: Extern<T>): R {
                     array[index].toString()
                 }
                 (converted as R).getOrThrow()
-            case _: Option<Extern<T>> => (retain(value) as R).getOrThrow()           // identity: no conversion
+            case _: Option<Extern<T>> => (e as R).getOrThrow()                      // identity: preserve receiver
             ...
             case _ => throw ExternConversionException(
                 "Unsupported conversion from ArkTS")
@@ -653,14 +636,14 @@ value; and conversion to the same `Extern<T>` is the identity case. Other target
 
 These ArkTS APIs are not part of the compiler-desugared `ForeignRuntime` surface. They
 still use `run` for bind-thread safety and `retain` when returning a foreign value. Helpers
-that consume an `Extern<T>` use `evalTree`, so callers may pass either a payload or a tree.
+that consume an `Extern<T>` project its payload through `jsValue(getHandle(...))`.
 
 | API | Role |
 | --- | --- |
 | `undefined()` / `null()` / `object()` / `symbol(...)` | Construct a JS value, then `retain` it. |
 | `global()` | Return the context's global object through `retain`. |
-| `strictEqual(a, b)` | Evaluate both operands and apply JS `===`. |
-| `isNull` / `isUndefined` | Evaluate the operand and test the resulting `JSValue`. |
+| `strictEqual(a, b)` | Project both operands and apply JS `===`. |
+| `isNull` / `isUndefined` | Project the operand and test the resulting `JSValue`. |
 | `objectHasProperty` / `objectKeys` / `objectDefineOwnProperty` | Object metadata; `defineOwnProperty` converts its value with `toJSValue`. |
 | `requireArkModule` | Load an Ark module, then `retain` the result. |
 | `requireSystemNativeModule(moduleName, prefix)` | Load a system native module with an explicit optional prefix, then `retain` the result. |
@@ -675,10 +658,10 @@ public static func symbol(description!: String = ""): Extern<T> {
 }
 
 public static func strictEqual(lhs: Extern<T>, rhs: Extern<T>): Bool {
-    run { evalTree(lhs).strictEqual(evalTree(rhs)) }
+    run { jsValue(getHandle(lhs)).strictEqual(jsValue(getHandle(rhs))) }
 }
-public static func isNull(value: Extern<T>): Bool      { run { evalTree(value).isNull() } }
-public static func isUndefined(value: Extern<T>): Bool { run { evalTree(value).isUndefined() } }
+public static func isNull(value: Extern<T>): Bool      { run { jsValue(getHandle(value)).isNull() } }
+public static func isUndefined(value: Extern<T>): Bool { run { jsValue(getHandle(value)).isUndefined() } }
 
 public static func requireSystemNativeModule(
     moduleName: String,
@@ -690,165 +673,10 @@ public static func requireSystemNativeModule(
 
 ## 9. Optimizations
 
-### Batched member access
-
-`evalTree` sees the whole member chain:
-
-```cangjie
-a.b.c.d
-// →
-ExternMemberAccess(
-    ExternMemberAccess(
-        ExternMemberAccess(a, "b"),
-        "c"),
-    "d")
-```
-
-It can flatten adjacent `ExternMemberAccess` nodes and evaluate them as one path. Walking from
-the outer node produces `d, c, b`, so the helper reverses the fields before returning:
-
-This replaces:
-
-```cangjie
-a.getProperty("b").getProperty("c").getProperty("d")
-```
-
-with:
-
-```cangjie
-getPropertyPath(a, ["b", "c", "d"])
-```
-
-**Important**: This needs a future path-based FFI such as `ARKTS_GetPropertyPath`; the current
-`ARKTS_GetProperty` still requires one call per field. The path operation must preserve
-normal property-read order, getters, proxy traps, and exceptions. Calls, updates, and
-indexed accesses stop the batch.
-
-### Batched member updates
-
-The same path can include a final write:
-
-```cangjie
-a.b.c = value
-
-// Current
-a.getProperty("b").setProperty("c", toJSValue(value))
-
-// Future
-setPropertyPath(a, ["b", "c"], toJSValue(value))
-```
-
-**Important**: This needs a future path-based FFI such as `ARKTS_SetPropertyPath`.
-
-### Support for ExternSequence
-
-`ExternSequence` is a derived constructor that the compiler introduces when it folds two
-consecutive evaluations into one:
-
-```cangjie
-T.eval(E1)
-T.eval(E2)
-// →
-T.eval(ExternSequence(E1, E2))
-```
-
-A runtime is not required to handle it. The `case _` branches of `eval` and `evalTree`
-delegate to `Extern<T>.evalDerived`, whose default implementation evaluates `E1`,
-discards its result, and returns `T.eval(E2)`. That is already correct, but for `ArkTSRuntime<T>`
-it re-enters `eval` twice: two `run` dispatches, two engine scopes, and a global handle for
-the result of `E1` that no Cangjie code can observe.
-
-Handling the constructor directly makes the sequence behave like any other tree — one
-dispatch, one scope, and only the final result retained:
-
-```cangjie
-public static func eval(tree: Extern<T>): Extern<T> {
-    match (tree) {
-        case ...
-        case ExternSequence(_, _) =>
-            run { retain(evalTree(tree)) }
-        case _ => Extern<T>.evalDerived(tree)
-    }
-}
-
-private static func evalTree(tree: Extern<T>): JSValue {
-    match (tree) {
-        case ...
-        case ExternSequence(first, second) =>
-            evalTree(first)          // local handle
-            evalTree(second)
-        case _ =>
-            evalTree(Extern<T>.evalDerived(tree))
-    }
-}
-```
-
-Operands are evaluated left to right, and an exception raised while evaluating `first`
-propagates without evaluating `second`, so the observable behavior matches the two
-separate `eval` calls the compiler started from.
-
-For example:
-
-```cangjie
-e1()
-e2()
-// →
-ArkTS.eval(ExternSequence(
-    ExternFunctionCall(e1, []),
-    ExternFunctionCall(e2, [])))
-```
-
-Both calls run inside one `run`; only the second result is retained.
-
-`evalTree` can also batch adjacent updates to the same object:
-
-```cangjie
-e1.a = ea
-e1.b = eb
-// →
-ArkTS.eval(ExternSequence(
-    ExternMemberUpdate(e1, "a", ea),
-    ExternMemberUpdate(e1, "b", eb)))
-```
-
-Put the batch before the general `ExternSequence` case:
-
-```cangjie
-private static func evalTree(tree: Extern<T>): JSValue {
-    match (tree) {
-        ...
-        case ExternSequence(first, second) =>
-            match ((first, second)) {
-                case (ExternMemberUpdate(target1, field1, value1),
-                      ExternMemberUpdate(target2, field2, value2)) =>
-                    let receiver1 = evalTree(target1)
-                    let receiver2 = evalTree(target2)
-                    if (receiver1.strictEqual(receiver2)) {
-                        ARKTS_SetProperties(
-                            receiver1,
-                            [field1, field2],
-                            [toJSValue(value1), toJSValue(value2)]) // one FFI operation
-                        context.undefined().toJSValue()
-                    } else {
-                        receiver1.setProperty(field1, toJSValue(value1))
-                        receiver2.setProperty(field2, toJSValue(value2))
-                        context.undefined().toJSValue()
-                    }
-                case _ =>
-                    evalTree(first)
-                    evalTree(second)
-            }
-        case _ =>
-            evalTree(Extern<T>.evalDerived(tree))
-    }
-}
-```
-
-Each target is evaluated once. Equal receivers use `ARKTS_SetProperties`; distinct
-receivers are reused for two ordinary updates.
-
-
-**Important**: This needs a future path-based FFI such as `ARKTS_SetProperties`.
+Each operation completes before the next runtime call begins. The runtime therefore
+cannot batch member chains, updates, or sequences, or send a whole expression to the
+FFI through this interface. Such optimizations would require additional compiler/API
+support. The caches below remain applicable.
 
 ### Name resolution caching
 
@@ -869,7 +697,7 @@ private static func propertyName(field: String): JSString {
     }
 }
 
-// Used by both a single access and every component of a batched path.
+// Used by memberAccess and memberUpdate.
 target.getProperty(propertyName(field))
 ```
 
@@ -929,30 +757,3 @@ for (event in events) {
 }
 ```
 
-### Not part of the current proposal, but possible: Send the entire `Extern` tree at once
-
-Consider the following expression, where `e` has type `Extern<T>`:
-
-```cangjie
-e.a.b(42).c
-```
-
-The compiler desugars it to:
-
-```cangjie
-T.eval(ExternMemberAccess(FunctionCall(ExternMemberAccess(e, a), b, [42]), c))
-```
-
-Even in the best case, evaluating this tree requires three FFI calls:
-
-1. `ExternMemberAccess(e, a)` via `ARKTS_GetProperty(...)`.
-2. `FunctionCall(..., b, [42])` via `ARKTS_Call(...)`.
-3. `ExternMemberAccess(..., c)` via `ARKTS_GetProperty(...)`.
-
-To reduce this to a single FFI call, Cangjie can encode the entire expression tree as a
-`@C`-compatible value (or simply serialize it) and send it to the C side for evaluation.
-
-Because the C side ultimately interprets the expression, Cangjie can serialize the
-`Extern` tree as a flat post-order sequence: each operand appears before the operation
-that consumes it. The C-side interpreter can then evaluate the sequence in order,
-without crossing the FFI boundary for every node.
