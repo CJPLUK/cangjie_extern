@@ -72,36 +72,43 @@ let a: Float64 = ArkTS.fromExtern<Float64>(
 is summarized below; the following sections describe its behavior.
 
 ```cangjie
+class ArkTSRuntimeCannotCallInAbstract <: Exception {}
+
 abstract public class ArkTSRuntime<T> <: ForeignRuntime<T> where T <: ArkTSRuntime<T> {
     // Context
-    public static func bind(newContext: JSContext): Unit
+    public static func bind(newContext: JSContext): Unit {
+        throw ArkTSRuntimeCannotCallInAbstract("Cannot call bind from abstract ArkTSRuntime")
+    }
+    protected static func getContext(): JSContext {
+        throw ArkTSRuntimeCannotCallInAbstract("Cannot call getContext from abstract ArkTSRuntime")
+    }
 
     // Dynamic operations
-    public static func memberAccess(e: Extern<T>, field: String): Extern<T>
-    public static func indexedAccess(e: Extern<T>, arg: Any): Extern<T>
-    public static func memberUpdate(e: Extern<T>, field: String, value: Any): Unit
-    public static func indexedUpdate(e: Extern<T>, field: Any, value: Any): Unit
-    public static func functionCall(e: Extern<T>, args: Array<Any>): Extern<T>
+    public static func memberAccess(e: Extern<T>, field: String): Extern<T> { ... }
+    public static func indexedAccess(e: Extern<T>, arg: Any): Extern<T> { ... }
+    public static func memberUpdate(e: Extern<T>, field: String, value: Any): Unit { ... }
+    public static func indexedUpdate(e: Extern<T>, field: Any, value: Any): Unit { ... }
+    public static func functionCall(e: Extern<T>, args: Array<Any>): Extern<T> { ... }
 
     // Conversions
-    public static func fromExtern<R>(value: Extern<T>): R
-    public static func toExtern<R>(value: R): Extern<T>
+    public static func fromExtern<R>(value: Extern<T>): R { ... }
+    public static func toExtern<R>(value: R): Extern<T> { ... }
 
     // Common values
-    public static func undefined(): Extern<T>
-    public static func null(): Extern<T>
-    public static func object(): Extern<T>
-    public static func global(): Extern<T>
-    public static func symbol(description!: String = ""): Extern<T>
+    public static func undefined(): Extern<T> { ... }
+    public static func null(): Extern<T> { ... }
+    public static func object(): Extern<T> { ... }
+    public static func global(): Extern<T> { ... }
+    public static func symbol(description!: String = ""): Extern<T> { ... }
 
     // Value checks
-    public static func strictEqual(lhs: Extern<T>, rhs: Extern<T>): Bool
-    public static func isNull(value: Extern<T>): Bool
-    public static func isUndefined(value: Extern<T>): Bool
+    public static func strictEqual(lhs: Extern<T>, rhs: Extern<T>): Bool { ... }
+    public static func isNull(value: Extern<T>): Bool { ... }
+    public static func isUndefined(value: Extern<T>): Bool { ... }
 
     // Own properties
-    public static func objectHasProperty(value: Extern<T>, key: String): Bool
-    public static func objectKeys(value: Extern<T>): Array<String>
+    public static func objectHasProperty(value: Extern<T>, key: String): Bool { ... }
+    public static func objectKeys(value: Extern<T>): Array<String> { ... }
     public static func objectDefineOwnProperty(
         value: Extern<T>,
         key: String,
@@ -109,14 +116,14 @@ abstract public class ArkTSRuntime<T> <: ForeignRuntime<T> where T <: ArkTSRunti
         isWritable!: Bool = true,
         isEnumerable!: Bool = true,
         isConfigurable!: Bool = true
-    ): Bool
+    ): Bool { ... }
 
     // Modules
-    public static func requireArkModule(specifier: String): Extern<T>
+    public static func requireArkModule(specifier: String): Extern<T> { ... }
     public static func requireSystemNativeModule(
         moduleName: String,
         prefix: ?String
-    ): Extern<T>
+    ): Extern<T> { ... }
 }
 ```
 
@@ -125,14 +132,39 @@ The five dynamic-operation methods, `fromExtern`, and `toExtern` form the compil
 directly by applications and generated bindings.
 
 
-Concrete runtime specializations subclass `ArkTSRuntime<T>`:
+## 3. Multiple runtime instances
+
+Multiple ArkTS contexts are supported by declaring a distinct runtime type for each context.
+Following the pattern in
+[`examples/multiple_instances_with_macros_1`](../examples/multiple_instances_with_macros_1),
+the ArkTS version of `@ArkTSInstance(ArkTSExample)` expands to this class structure
+(method bodies omitted):
 
 ```cangjie
-class ArkTS1 <: ArkTSRuntime<ArkTS1> {}
-class ArkTS2 <: ArkTSRuntime<ArkTS2> {}
+class ArkTSExample <: ArkTSRuntime<ArkTSExample> {
+    private static var context: ?JSContext = None
+
+    protected static func getContext(): JSContext {...}
+    public static func bind(newContext: JSContext): Unit {...}
+}
 ```
 
-## 3. Context
+```cangjie
+@ArkTSInstance(ArkTS1)
+@ArkTSInstance(ArkTS2)
+
+ArkTS1.bind(context1)
+ArkTS2.bind(context2)
+
+let first: Extern<ArkTS1> = ArkTS1.global()
+let second: Extern<ArkTS2> = ArkTS2.global()
+```
+
+`Extern<ArkTS1>` and `Extern<ArkTS2>` are different types whose operations use their respective
+contexts. Values from one runtime cannot be used directly in another; transferring supported
+data requires conversion through Cangjie values.
+
+## 4. Context
 
 ```cangjie
 public static func bind(newContext: JSContext): Unit
@@ -157,7 +189,7 @@ There is no `unbind` or context replacement. A different context requires a diff
 specialization. Exactly one concurrent `bind` can succeed; callers must wait for it to
 complete before using the runtime.
 
-## 4. Thread dispatch
+## 5. Thread dispatch
 
 Internal dispatcher:
 
@@ -184,7 +216,7 @@ flowchart TD
 **Possible optimization.** If all callers are guaranteed to use the bind thread,
 the runtime could omit the thread check and dispatch.
 
-## 5. Handle model
+## 6. Handle model
 
 `Extern<T>` holds an opaque payload owned by the runtime. Returned values remain valid
 across calls, including intermediate results in `a.b.c`. Users can keep `Extern<T>`
@@ -193,7 +225,7 @@ values without manually retaining them.
 Callable properties retain both the function and its receiver for later calls. The
 runtime releases retained resources on the context's bind thread when no longer needed.
 
-## 6. Dynamic operations
+## 7. Dynamic operations
 
 The compiler lowers each dynamic operation to a direct static call:
 
@@ -265,7 +297,7 @@ Passing a callable property back to ArkTS passes the original function. The save
 receiver applies only to Cangjie dynamic calls. Calling a non-callable value throws
 `ExternFunctionAccessException`.
 
-## 7. Conversions
+## 8. Conversions
 
 A Cangjie value used where
 `Extern<T>` is expected becomes `T.toExtern`, while a forced cast `(U)e` becomes
@@ -325,7 +357,7 @@ including any saved receiver.
 
 Unsupported or failed conversions throw `ExternConversionException`.
 
-## 8. Helpers
+## 9. Helpers
 
 These ArkTS APIs complement the compiler-facing `ForeignRuntime` methods. They follow
 the same threading and value-lifetime rules.
@@ -373,7 +405,7 @@ public static func requireSystemNativeModule(
 | `requireArkModule` | Load an Ark module. |
 | `requireSystemNativeModule(moduleName, prefix)` | Load a system native module with an explicit optional prefix. |
 
-## 9. Optimizations
+## 10. Optimizations
 
 Each operation completes before the next runtime call begins. The runtime therefore
 cannot batch member chains, updates, or sequences, or send a whole expression to the
