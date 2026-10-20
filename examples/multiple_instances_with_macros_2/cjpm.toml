@@ -1,0 +1,7 @@
+[package]
+  cjc-version = "0.0.1"
+  name = "multiple_instances_with_macros_2"
+  description = "Delegate static foreign runtime operations to independent ArkTS runtime objects"
+  version = "1.0.0"
+  output-type = "executable"
+  src-dir = "src"
