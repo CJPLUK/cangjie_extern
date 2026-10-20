@@ -1,0 +1,7 @@
+[package]
+  cjc-version = "0.0.1"
+  name = "multiple_instances_with_macros_1"
+  description = "Generate independent ArkTS runtime classes with a macro"
+  version = "1.0.0"
+  output-type = "executable"
+  src-dir = "src"
