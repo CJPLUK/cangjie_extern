@@ -137,8 +137,7 @@ directly by applications and generated bindings.
 Multiple ArkTS contexts are supported by declaring a distinct runtime type for each context.
 Following the pattern in
 [`examples/multiple_instances_with_macros_1`](../examples/multiple_instances_with_macros_1),
-the ArkTS version of `@ArkTSInstance(ArkTSExample)` expands to this class structure
-(method bodies omitted):
+the macro call `@ArkTSInstance(ArkTSExample)` expands to the class bellow:
 
 ```cangjie
 class ArkTSExample <: ArkTSRuntime<ArkTSExample> {
@@ -148,6 +147,8 @@ class ArkTSExample <: ArkTSRuntime<ArkTSExample> {
     public static func bind(newContext: JSContext): Unit {...}
 }
 ```
+
+Example: one can create multiple instances of the `ArkTSRuntime<T>` runtime as follows.
 
 ```cangjie
 @ArkTSInstance(ArkTS1)
@@ -174,15 +175,14 @@ public static func bind(newContext: JSContext): Unit
 specialization can be bound to exactly one context. Values from different specializations,
 such as `Extern<ArkTS1>` and `Extern<ArkTS2>`, have different types.
 
-The first successful `bind` permanently installs the context. Later calls throw
-`ArkTSContextAlreadyBoundException`, even for the same context. Using an unbound runtime
-throws `ArkTSContextNotBoundException`.
+The first successful `bind` permanently installs the context. Later calls throw an
+exception, even for the same context. Using an unbound runtime also throws an exception.
 
 ```cangjie
 ArkTS1.bind(context1)
 ArkTS2.bind(context2)
 
-ArkTS1.bind(context1) // Already bound
+ArkTS1.bind(context1) // Exception: context already bound
 ```
 
 There is no `unbind` or context replacement. A different context requires a different
