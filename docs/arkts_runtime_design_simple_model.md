@@ -134,10 +134,11 @@ directly by applications and generated bindings.
 
 ## 3. Multiple runtime instances
 
-Multiple ArkTS contexts are supported by declaring a distinct runtime type for each context.
-Following the pattern in
-[`examples/multiple_instances_with_macros_1`](../examples/multiple_instances_with_macros_1),
-the macro call `@ArkTSInstance(ArkTSExample)` expands to the class bellow:
+We use the `@ArkTSInstance` macro to declare multiple ArkTS runtime instances, each represented
+by a distinct type. The macro generates a subclass that passes its own type as `T` to
+`ArkTSRuntime<T>`. Each subclass inherits the shared runtime operations and owns an independent
+context binding. For example, `@ArkTSInstance(ArkTSExample)` expands to the following class
+(method bodies omitted):
 
 ```cangjie
 class ArkTSExample <: ArkTSRuntime<ArkTSExample> {
@@ -148,7 +149,8 @@ class ArkTSExample <: ArkTSRuntime<ArkTSExample> {
 }
 ```
 
-Example: one can create multiple instances of the `ArkTSRuntime<T>` runtime as follows.
+`JSContext` identifies one ArkTS/JS engine instance. Each generated runtime can be bound to
+exactly one context:
 
 ```cangjie
 @ArkTSInstance(ArkTS1)
@@ -165,31 +167,14 @@ let second: Extern<ArkTS2> = ArkTS2.global()
 contexts. Values from one runtime cannot be used directly in another; transferring supported
 data requires conversion through Cangjie values.
 
-## 4. Context
-
-```cangjie
-public static func bind(newContext: JSContext): Unit
-```
-
-`JSContext` identifies one ArkTS/JS engine instance. Each concrete `ArkTSRuntime<T>`
-specialization can be bound to exactly one context. Values from different specializations,
-such as `Extern<ArkTS1>` and `Extern<ArkTS2>`, have different types.
-
 The first successful `bind` permanently installs the context. Later calls throw an
 exception, even for the same context. Using an unbound runtime also throws an exception.
-
-```cangjie
-ArkTS1.bind(context1)
-ArkTS2.bind(context2)
-
-ArkTS1.bind(context1) // Exception: context already bound
-```
 
 There is no `unbind` or context replacement. A different context requires a different
 specialization. Exactly one concurrent `bind` can succeed; callers must wait for it to
 complete before using the runtime.
 
-## 5. Thread dispatch
+## 4. Thread dispatch
 
 Internal dispatcher:
 
@@ -216,7 +201,7 @@ flowchart TD
 **Possible optimization.** If all callers are guaranteed to use the bind thread,
 the runtime could omit the thread check and dispatch.
 
-## 6. Handle model
+## 5. Handle model
 
 `Extern<T>` holds an opaque payload owned by the runtime. Returned values remain valid
 across calls, including intermediate results in `a.b.c`. Users can keep `Extern<T>`
@@ -225,7 +210,7 @@ values without manually retaining them.
 Callable properties retain both the function and its receiver for later calls. The
 runtime releases retained resources on the context's bind thread when no longer needed.
 
-## 7. Dynamic operations
+## 6. Dynamic operations
 
 The compiler lowers each dynamic operation to a direct static call:
 
@@ -297,7 +282,7 @@ Passing a callable property back to ArkTS passes the original function. The save
 receiver applies only to Cangjie dynamic calls. Calling a non-callable value throws
 `ExternFunctionAccessException`.
 
-## 8. Conversions
+## 7. Conversions
 
 A Cangjie value used where
 `Extern<T>` is expected becomes `T.toExtern`, while a forced cast `(U)e` becomes
@@ -357,7 +342,7 @@ including any saved receiver.
 
 Unsupported or failed conversions throw `ExternConversionException`.
 
-## 9. Helpers
+## 8. Helpers
 
 These ArkTS APIs complement the compiler-facing `ForeignRuntime` methods. They follow
 the same threading and value-lifetime rules.
@@ -405,7 +390,7 @@ public static func requireSystemNativeModule(
 | `requireArkModule` | Load an Ark module. |
 | `requireSystemNativeModule(moduleName, prefix)` | Load a system native module with an explicit optional prefix. |
 
-## 10. Optimizations
+## 9. Optimizations
 
 Each operation completes before the next runtime call begins. The runtime therefore
 cannot batch member chains, updates, or sequences, or send a whole expression to the
