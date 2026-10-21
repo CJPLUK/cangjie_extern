@@ -203,12 +203,62 @@ the runtime could omit the thread check and dispatch.
 
 ## 5. Handle model
 
-`Extern<T>` holds an opaque payload owned by the runtime. Returned values remain valid
-across calls, including intermediate results in `a.b.c`. Users can keep `Extern<T>`
-values without manually retaining them.
+For `ArkTSRuntime<T>`, the opaque payload of `Extern<T>` is a runtime-owned handle that
+stores a backend-specific representation of a foreign value from the context bound to `T`.
+The handle maintains any retained references needed to keep that value alive. The same
+lifetime guarantees apply to both versions of the library, regardless of the representation.
 
-Callable properties retain both the function and its receiver for later calls. The
-runtime releases retained resources on the context's bind thread when no longer needed.
+The runtime manages this lifetime automatically. Users can store `Extern<T>` values in
+variables, fields, or collections, return them from functions, and reuse them across calls
+without manually retaining or releasing the underlying values. A referenced ArkTS value
+remains alive while its handle is reachable from Cangjie. Copying an `Extern<T>` preserves
+access to the same foreign value, without duplicating the ArkTS object.
+
+For example, the returned handle keeps an object alive after the function that created it
+returns. These examples assume `ArkTS` has already been bound to a context.
+
+```cangjie
+func createObject(): Extern<ArkTS> {
+    let value: Extern<ArkTS> = ArkTS.object()
+    value.label = "original"
+    return value // The object remains usable after this function returns.
+}
+
+func useObject(): Unit {
+    let original: Extern<ArkTS> = createObject()
+    let copy: Extern<ArkTS> = original // Both handles refer to the same ArkTS object.
+
+    copy.label = "updated"
+    println((String)original.label) // Prints "updated".
+}
+
+useObject() // No manual retain or release is needed.
+```
+
+For callable properties, the handle retains both the function value and its receiver.
+An extracted method therefore keeps its receiver alive for later calls, even if the original
+Cangjie variable holding that receiver is no longer in use.
+
+Using the module from the earlier rectangle example:
+
+```cangjie
+func extractArea(): Extern<ArkTS> {
+    let api: Extern<ArkTS> = ArkTS.requireArkModule("test.ets")
+    let rectangle: Extern<ArkTS> = api.createRectangle()
+    return rectangle.area // Retains both the function and rectangle.
+}
+
+let area: Extern<ArkTS> = extractArea()
+let result: Float64 = (Float64)area() // The saved rectangle is still the receiver.
+```
+
+The local `rectangle` variable is out of scope when `area()` runs, but the extracted method
+keeps the underlying object alive. The user does not need to store the receiver separately.
+
+When a handle is no longer needed, the runtime automatically releases its retained references
+on the context's bind thread. This allows the ArkTS garbage collector to reclaim values that
+have no other references; it does not require immediate destruction of the underlying objects.
+For example, after `useObject()` returns, its local handles no longer keep the object alive.
 
 ## 6. Dynamic operations
 
