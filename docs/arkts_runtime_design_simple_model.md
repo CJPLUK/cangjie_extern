@@ -288,12 +288,53 @@ Arguments, indices, and update values retain their Cangjie types and are passed 
 `Any`; dynamic subexpressions are evaluated before the receiving method is called.
 Reads and calls return `Extern<T>` values; updates return `Unit`.
 
+### Execution through `run`
+
+All five dynamic-operation methods use the internal `run` dispatcher described in
+[Thread dispatch](#4-thread-dispatch). It ensures that engine operations execute on the
+bind thread of `T`'s context. If the caller is already on that thread, the operation runs
+directly; otherwise, the caller waits while `run` dispatches it to the bind thread.
+The result or exception is returned to the caller, so users do not need to dispatch
+dynamic operations themselves.
+
+All work that accesses the engine takes place inside the callback passed to `run`. This
+includes converting property keys, indices, arguments, and assigned values to their foreign
+representations, performing the operation, and retaining any returned foreign value in an
+`Extern<T>` handle. That handle remains valid after `run` returns, as described in the
+handle model.
+
+Schematic implementations, with backend-specific steps omitted:
+
+```cangjie
+public static func memberAccess(e: Extern<T>, field: String): Extern<T> {
+    run<Extern<T>> {
+        // Read the property and return a retained Extern<T> handle.
+        ...
+    }
+}
+
+public static func memberUpdate(e: Extern<T>, field: String, value: Any): Unit {
+    run<Unit> {
+        // Convert the assigned value and update the property.
+        ...
+    }
+}
+```
+
+`indexedAccess`, `indexedUpdate`, and `functionCall` follow the same pattern. Each method
+dispatches independently: in `a.m(10)`, the `memberAccess` call completes before
+`functionCall` starts its own `run` call. A chain such as `a.b.c` likewise performs one
+dispatch per member access; the complete expression is not a single operation on the JS thread.
+
 ### Member access
 
 ```cangjie
 public static func memberAccess(e: Extern<T>, field: String): Extern<T>
 public static func memberUpdate(e: Extern<T>, field: String, value: Any): Unit
 ```
+
+Within `run`, `memberAccess` reads the named property and wraps its value in an `Extern<T>`
+handle. `memberUpdate` converts the supplied value and writes it to that property.
 
 For supported operator names, `memberAccess` returns a callable that applies the
 operator to the receiver and its argument.
@@ -305,9 +346,12 @@ public static func indexedAccess(e: Extern<T>, arg: Any): Extern<T>
 public static func indexedUpdate(e: Extern<T>, field: Any, value: Any): Unit
 ```
 
-Indices may be `Int32` or `Int64` positions, `String` property names, or `Extern<T>`
+Indices may be `Int64` positions, `String` property names, or `Extern<T>`
 values from the same runtime representing strings, symbols, or numbers. Unsupported
 index types throw `ExternIndexedAccessException`.
+
+Within `run`, these methods resolve the index and read or update the corresponding element
+or property. Reads retain the returned value; updates convert the assigned value before writing.
 
 ### Calls and receivers
 
@@ -315,11 +359,14 @@ index types throw `ExternIndexedAccessException`.
 public static func functionCall(e: Extern<T>, args: Array<Any>): Extern<T>
 ```
 
+Within `run`, `functionCall` converts the arguments, invokes the function with its receiver,
+and wraps the returned value in a retained `Extern<T>` handle.
+
 `functionCall` receives only a callee value and its arguments, so it cannot distinguish
 a member call from a call through an extracted function. Callable properties returned by
 `memberAccess` and `indexedAccess` retain their receiver. Extracted methods therefore
-keep their receiver, unlike bare JS. Functions obtained without a receiver receive
-`undefined` as `this`.
+keep their receiver, following Cangjie method semantics, unlike bare JS. Functions obtained
+without a receiver receive `undefined` as `this`.
 
 ```cangjie
 a.m(10)           // this = a
