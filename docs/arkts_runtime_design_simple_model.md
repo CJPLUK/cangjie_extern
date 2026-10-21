@@ -381,13 +381,29 @@ receiver applies only to Cangjie dynamic calls. Calling a non-callable value thr
 
 ## 7. Conversions
 
-A Cangjie value used where
-`Extern<T>` is expected becomes `T.toExtern`, while a forced cast `(U)e` becomes
-`T.fromExtern<U>(e)`.
+A Cangjie value used where `Extern<T>` is expected becomes a call to `T.toExtern`.
+This applies, for example, to variable initialization, assignment, function arguments,
+and return values whose expected type is `Extern<T>`. Conversion in the other direction
+is explicit: a forced cast `(U)e` becomes `T.fromExtern<U>(e)`.
+
+The runtime type `T` selects the context in which the foreign value is created or read.
+The examples below assume that each runtime used has already been bound to its context.
+
+### Execution and lifetime
+
+Both conversion methods use `run` for any work that accesses the engine. Creating foreign
+values, reading them, and converting array elements therefore happen on the context's bind
+thread. The caller receives the converted result, or an exception, after the operation
+completes. The Cangjie expression supplied as input is evaluated before the conversion call.
+
+`toExtern` returns a retained handle with the lifetime guarantees described in section 5.
+`fromExtern` produces a Cangjie value without consuming or invalidating the source handle.
+Returning an existing `Extern<T>` unchanged requires no new foreign allocation.
 
 ### Type mapping
 
-For each supported `U`, `V` denotes its mapped ArkTS type.
+For each supported `U`, `V` denotes its mapped ArkTS type. The Cangjie source type selects
+the mapping for `toExtern`; the requested Cangjie result type selects it for `fromExtern`.
 
 | Cangjie type | ArkTS type |
 | --- | --- |
@@ -411,12 +427,14 @@ For each supported `U`, `V` denotes its mapped ArkTS type.
 
 ### Conversion rules
 
-Arguments and assigned values follow the same type mapping as `toExtern`.
+Dynamic-call arguments and values assigned to foreign properties follow the same type
+mapping as `toExtern`. They reach the runtime as `Any`; the compiler does not insert a
+separate `toExtern` call for them. The receiving operation performs the conversion inside
+its own `run` callback. For example, `object.label = "name"` passes the Cangjie string to
+`memberUpdate`, which converts it before updating the foreign property.
+
 An `Extern<T>` from the same runtime supplies its foreign value without copying it.
 Values from other runtime specializations are not accepted.
-
-`Option<U>` converts `Some` using the mapping for `U` and `None` to `undefined`.
-Arrays convert each element using its type's mapping.
 
 ### `toExtern`: Cangjie value → `Extern<T>`
 
@@ -426,6 +444,19 @@ public static func toExtern<R>(value: R): Extern<T>
 
 `toExtern` converts a supported Cangjie value according to the table above. An existing
 `Extern<T>` is returned unchanged, preserving any saved receiver.
+
+The implicit and explicit forms use the same conversion:
+
+```cangjie
+let width: Float64 = 3.0
+let foreignWidth: Extern<ArkTS> = width // Calls ArkTS.toExtern<Float64>(width).
+let explicitWidth: Extern<ArkTS> = ArkTS.toExtern<Float64>(width)
+
+let sameHandle: Extern<ArkTS> = ArkTS.toExtern<Extern<ArkTS>>(foreignWidth)
+```
+
+Both `foreignWidth` and `explicitWidth` represent the ArkTS number `3.0`. `sameHandle`
+preserves the handle supplied as input.
 
 ### `fromExtern`: `Extern<T>` → Cangjie type `R`
 
@@ -437,7 +468,65 @@ public static func fromExtern<R>(value: Extern<T>): R
 `Unit` discards the value. Conversion to the same `Extern<T>` returns it unchanged,
 including any saved receiver.
 
-Unsupported or failed conversions throw `ExternConversionException`.
+```cangjie
+let restoredWidth: Float64 = (Float64)foreignWidth
+let restoredDirectly: Float64 = ArkTS.fromExtern<Float64>(foreignWidth)
+```
+
+The cast and direct call perform the same conversion. An expected Cangjie type alone does
+not insert `fromExtern`: `let width: Float64 = foreignWidth` requires an explicit cast.
+
+### Options and arrays
+
+`Option<U>` converts `Some(value)` using the mapping for `U` and `None` to `undefined`.
+In the reverse direction, `undefined` becomes `None`; other values are converted to `U`
+and wrapped in `Some` if that conversion succeeds.
+
+```cangjie
+let title: Option<String> = Some("rectangle")
+let foreignTitle: Extern<ArkTS> = title // ArkTS string "rectangle".
+
+let missing: Option<String> = None
+let foreignMissing: Extern<ArkTS> = missing // ArkTS undefined.
+let restoredMissing: Option<String> = (Option<String>)foreignMissing // None.
+```
+
+Arrays convert each element using its type's mapping. Conversion creates an array in the
+destination runtime; subsequent changes to either array's elements are not automatically
+reflected in the other array. Elements that are themselves `Extern<T>` handles continue
+to refer to their foreign values.
+
+```cangjie
+let labels: Array<String> = ["width", "height"]
+let foreignLabels: Extern<ArkTS> = labels
+let restoredLabels: Array<String> = (Array<String>)foreignLabels
+
+foreignLabels[0] = "depth"
+println(labels[0])         // Prints "width".
+println(restoredLabels[0]) // Prints "width".
+```
+
+### Conversion failures and runtime boundaries
+
+Unsupported or failed conversions throw `ExternConversionException`, including failures
+while converting an option's value or an array element. The generic signatures do not imply
+that every Cangjie type is supported; the runtime checks whether it can perform the requested
+conversion.
+
+A value from another runtime specialization is also rejected. To transfer supported data,
+convert it to a Cangjie value with the source runtime, then convert that value with the
+destination runtime:
+
+```cangjie
+let source: Extern<ArkTS1> = "hello"
+let text: String = (String)source
+let destination: Extern<ArkTS2> = text
+```
+
+Here the source and destination handles belong to their respective contexts. Assigning
+`source` directly to an `Extern<ArkTS2>` would invoke `ArkTS2.toExtern` and fail; it would
+not move the foreign value between contexts. Direct conversion between runtime specializations
+could be supported in a future version.
 
 ## 8. Helpers
 
