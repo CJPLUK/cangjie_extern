@@ -684,53 +684,59 @@ preserves that result, which can be checked with `isUndefined`.
 
 ## 9. Optimizations
 
-Each operation completes before the next runtime call begins. The runtime therefore
-cannot batch member chains, updates, or sequences, or send a whole expression to the
-FFI through this interface. Such optimizations would require additional compiler/API
-support. The caches below remain applicable.
+The runtime can reduce conversion, allocation, and dispatch costs within each static call
+without changing the `ForeignRuntime<T>` interface. The ideas in the
+[Extern design's runtime optimizations](extern_architecture_simple_model.md#5-runtime-implementer-possible-optimizations)
+apply here: interning property keys, caching converted strings, and converting aggregates
+in bulk. The available backend operations determine which optimizations can be implemented.
+
+All optimizations must preserve the type mappings, evaluation order, exceptions, receiver
+binding, and value-lifetime guarantees described above. The examples below assume `ArkTS`
+has already been bound to a context.
 
 ### Name resolution caching
 
 Repeated member access should cache only the conversion of a Cangjie field name to an
-ArkTS property key. The cache belongs to the concrete `ArkTSRuntime<T>` specialization and is
-used on the bind thread.
+ArkTS property key. This is property-key interning: after a cache miss creates and retains
+the key, later operations reuse it. Member reads and updates, string-based indexed access,
+and property helpers can share the same cache within a runtime specialization.
 
 Thus the first access to `a.foo` creates the ArkTS string for `"foo"`; later accesses
 reuse it and avoid another string conversion. The resolved value of `a.foo` is never
 cached: every access still performs normal ArkTS property lookup, preserving reassignment,
 getters, proxy traps, and exceptions.
 
-Examples that repeatedly use the same property key:
+For example, all operations below reuse the key `"price"`, but the two reads observe
+different values:
 
 ```cangjie
-for (item in items) {
-    total += (Float64)item.price
-}
+let record: Extern<ArkTS> = ArkTS.object()
+record.price = 3.0
+let firstPrice: Float64 = (Float64)record.price // 3.0.
 
-for (view in views) {
-    view.render()
-}
+record.price = 4.0
+let secondPrice: Float64 = (Float64)record.price // 4.0.
 ```
 
-The ArkTS keys for `"price"` and `"render"` are created once and reused on every
-iteration, even though each property lookup still happens normally.
+The same rule applies to method access: cache the property key, but look up the function on each access.
 
-### Caching immutable objects
+### Caching converted strings
 
-Conversions may cache immutable values that have different Cangjie and ArkTS
-representations. Strings are the primary case: the first conversion records both the
-Cangjie `String` and a retained ArkTS string; later conversions in either direction reuse
-that pair instead of copying the string again.
-
-The cache is per concrete `ArkTSRuntime<T>` specialization because retained handles belong to
-its bound context. It should be weak or bounded so cached globals do not live forever.
-This is safe only for immutable values; mutable objects still require normal conversion
-or an explicit invalidation policy.
-
-Example with repeated conversion of the same immutable value:
+Strings are immutable, so conversions may cache the association between a Cangjie `String`
+and its retained foreign representation. Repeated `toExtern<String>` calls can reuse the
+foreign string, while repeated `fromExtern<String>` calls can reuse an already converted
+Cangjie string. The same conversion cache can serve strings passed as dynamic-call
+arguments or assigned to foreign properties.
 
 ```cangjie
-for (event in events) {
-    logger.tag("network").write(event) // Reuse the string
-}
+let firstTag: Extern<ArkTS> = "network"
+let secondTag: Extern<ArkTS> = "network" // May reuse the converted foreign string.
+
+let firstText: String = (String)firstTag
+let secondText: String = (String)secondTag // May reuse the converted Cangjie string.
 ```
+
+This reuse applies to string contents, not to the results of arbitrary operations involving
+strings. For example, caching `"network"` in `logger.tag("network")` does not remove the call
+to `tag`. Fresh objects and symbols must also retain their identity semantics: `object()`
+and `symbol(description: "network")` still create distinct values on each call.
