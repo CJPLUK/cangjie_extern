@@ -531,22 +531,74 @@ could be supported in a future version.
 ## 8. Helpers
 
 These ArkTS APIs complement the compiler-facing `ForeignRuntime` methods. They follow
-the same threading and value-lifetime rules.
+the same threading and value-lifetime rules: each helper uses `run` for engine access on
+the context's bind thread, and any returned `Extern<T>` retains its foreign value. Results
+and exceptions return synchronously to the caller. These guarantees apply to both backends.
+
+Helpers that accept foreign values operate on values from the same runtime specialization.
+The examples below assume `ArkTS` has already been bound to a context.
+
+### Common values
 
 ```cangjie
-// Common values
 public static func undefined(): Extern<T>
 public static func null(): Extern<T>
 public static func object(): Extern<T>
 public static func global(): Extern<T>
 public static func symbol(description!: String = ""): Extern<T>
+```
 
-// Value checks
+| API | Behavior |
+| --- | --- |
+| `undefined()` | Return the ArkTS `undefined` value. |
+| `null()` | Return the ArkTS `null` value. |
+| `object()` | Create a new empty ArkTS object. |
+| `global()` | Return the global object of the bound context. |
+| `symbol(description: ...)` | Create a new symbol with an optional description. |
+
+`object()` creates a distinct object on each call, while `global()` refers to the existing
+global object. Each call to `symbol` creates a distinct symbol, even when descriptions match.
+Symbols can be used as property keys through dynamic indexed access.
+
+```cangjie
+let missing: Extern<ArkTS> = ArkTS.undefined()
+let empty: Extern<ArkTS> = ArkTS.null()
+let record: Extern<ArkTS> = ArkTS.object()
+let globals: Extern<ArkTS> = ArkTS.global()
+let key: Extern<ArkTS> = ArkTS.symbol(description: "tag")
+
+record.name = "rectangle"
+record[key] = "metadata"
+let tag: String = (String)record[key] // "metadata".
+```
+
+### Value checks
+
+```cangjie
 public static func strictEqual(lhs: Extern<T>, rhs: Extern<T>): Bool
 public static func isNull(value: Extern<T>): Bool
 public static func isUndefined(value: Extern<T>): Bool
+```
 
-// Own properties
+`strictEqual` applies ArkTS/JS `===` to the underlying foreign values, without coercing
+their types. For objects, it compares object identity. It does not compare the Cangjie
+handles themselves. `isNull` and `isUndefined` test for their respective values; `null`
+and `undefined` are distinct.
+
+These helpers return Cangjie `Bool` values directly, so their results can be used in
+conditions without a forced cast.
+
+```cangjie
+let sameObject: Bool = ArkTS.strictEqual(record, record) // true.
+let differentObject: Bool = ArkTS.strictEqual(record, ArkTS.object()) // false.
+let isMissing: Bool = ArkTS.isUndefined(missing) // true.
+let isEmpty: Bool = ArkTS.isNull(empty) // true.
+let sameValue: Bool = ArkTS.strictEqual(missing, empty) // false.
+```
+
+### Own properties
+
+```cangjie
 public static func objectHasProperty(value: Extern<T>, key: String): Bool
 public static func objectKeys(value: Extern<T>): Array<String>
 public static func objectDefineOwnProperty(
@@ -557,8 +609,51 @@ public static func objectDefineOwnProperty(
     isEnumerable!: Bool = true,
     isConfigurable!: Bool = true
 ): Bool
+```
 
-// Modules
+`objectHasProperty` checks whether the object itself has the named property, excluding
+properties inherited from its prototype. A property whose value is `undefined` still
+counts as present.
+
+`objectKeys` returns a Cangjie array containing the object's own enumerable string keys.
+Inherited properties, non-enumerable properties, and symbol keys are excluded. The returned
+array is a snapshot; later property changes do not update it.
+
+`objectDefineOwnProperty` defines an own data property. It converts `propertyValue` using
+the rules in section 7 inside its `run` callback, and returns whether the definition
+succeeded. Exceptions raised by the engine propagate to the caller. Its named flags all
+default to `true`:
+
+| Flag | Controls |
+| --- | --- |
+| `isWritable` | Whether the property's value can be changed by assignment. |
+| `isEnumerable` | Whether the property appears in `objectKeys`. |
+| `isConfigurable` | Whether deletion and reconfiguration of the property are allowed. |
+
+For example, add a property that can be read but is not writable or enumerable:
+
+```cangjie
+let defined: Bool = ArkTS.objectDefineOwnProperty(
+    record, "internalId", "shape-1",
+    isWritable: false,
+    isEnumerable: false,
+    isConfigurable: false
+)
+let hasId: Bool = ArkTS.objectHasProperty(record, "internalId") // true.
+let internalId: String = (String)record.internalId // "shape-1".
+let keys: Array<String> = ArkTS.objectKeys(record) // ["name"].
+
+record.optional = ArkTS.undefined()
+let hasOptional: Bool = ArkTS.objectHasProperty(record, "optional") // true.
+let optionalIsUndefined: Bool = ArkTS.isUndefined(record.optional) // true.
+```
+
+The symbol key created earlier and `internalId` are absent from `keys`. Adding `optional`
+afterward does not change the already returned array.
+
+### Module loading
+
+```cangjie
 public static func requireArkModule(specifier: String): Extern<T>
 public static func requireSystemNativeModule(
     moduleName: String,
@@ -566,15 +661,26 @@ public static func requireSystemNativeModule(
 ): Extern<T>
 ```
 
-| API | Role |
-| --- | --- |
-| `undefined()` / `null()` / `object()` / `symbol(...)` | Construct the corresponding JS value. |
-| `global()` | Return the context's global object. |
-| `strictEqual(a, b)` | Apply JS `===`. |
-| `isNull` / `isUndefined` | Test for `null` or `undefined`. |
-| `objectHasProperty` / `objectKeys` / `objectDefineOwnProperty` | Inspect, list, or define an object's own properties. |
-| `requireArkModule` | Load an Ark module. |
-| `requireSystemNativeModule(moduleName, prefix)` | Load a system native module with an explicit optional prefix. |
+`requireArkModule` loads an ArkTS module using a specifier understood by the host environment.
+`requireSystemNativeModule` loads a registered system native module. Its `prefix` argument
+must be supplied explicitly: use `None` for the default lookup or `Some(prefix)` when the
+module requires a lookup prefix.
+
+Both helpers perform loading through `run` and wrap the loader's result in an `Extern<T>`
+handle. The result is typically an object whose exports can be accessed through dynamic
+operations. It belongs to the context of `T` and follows the normal handle-lifetime rules.
+
+```cangjie
+let api: Extern<ArkTS> = ArkTS.requireArkModule("test.ets")
+let rectangle: Extern<ArkTS> = api.createRectangle()
+
+let logging: Extern<ArkTS> = ArkTS.requireSystemNativeModule("hilog", None)
+let loggingUnavailable: Bool = ArkTS.isUndefined(logging)
+```
+
+Module availability and resolution depend on the host environment. Loading exceptions
+propagate to the caller; if the loader reports failure by returning `undefined`, the helper
+preserves that result, which can be checked with `isUndefined`.
 
 ## 9. Optimizations
 
