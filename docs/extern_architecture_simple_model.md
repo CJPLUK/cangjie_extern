@@ -695,8 +695,8 @@ The compiler introduces three rewrites:
 
 | Rewrite | Source | Result |
 |---|---|---|
-| Implicit conversion | `e: U` where `Extern<T>` is expected | `T.toExtern<U>(e)` |
 | Forced cast | `(U)e` with `e: Extern<T>` | `T.fromExtern<U>(DESUGAR(e))` |
+| Implicit conversion | `e: U` where `Extern<T>` is expected | `T.toExtern<U>(e)` |
 | Dynamic operation | `e.f`, `e[i]`, `e(args)`, `e.f = v`, `e[i] = v`, `e.f op= v`, `e[i] op= v` with `e: Extern<T>` | Direct calls to `T.memberAccess`, `T.indexedAccess`, `T.functionCall`, `T.memberUpdate` and `T.indexedUpdate`, with temporaries for compound assignments |
 
 Sema only accepts these expressions and gives them their types. The rewrites happen in one pass after Sema, driven by the final types.
@@ -725,22 +725,7 @@ else:
 
 So the conversion applies wherever an expression is checked against `Extern<T>`: variable initializers, assignments, call arguments, `return`, function and lambda bodies, and default parameter values.
 
-`IsControlFlowExpr(node)` (file-local in `TypeChecker.cpp`) is true for `if`, `match`, `try`, blocks, parenthesized expressions, and loops (`Node::IsLoopExpr`). These are checked as usual. The first five check the expressions giving their value against their own target, so the target `Extern<T>` reaches those values instead of converting the whole node. Loops check their type `Unit` against the target. `synchronized` is not included, so that it is converted as a whole and the conversion runs after the lock is released. A value of type `Unit` that doesn't come from a branch is therefore an error, as it is for any other target: a loop, an `if` without `else`, a `try` with resources, and a block ending with a declaration.
-
-For a `try` with effect handlers, the try block and the handlers are lambdas checked against `() -> Extern<T>` and `(Cmd) -> Extern<T>`, so their values are converted like function bodies. `CreateSetHandler` in [EffectHandlers.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/799e9f6545cc8a83355c5d77e777f8f571215815...feature_extern_with_enum#diff-f3f9ed3b121abc1843d0e57504b5a5016d8f66d5151a90e59d5dee3cad575083) wraps a handler's value in a `try` and synthesizes its type; when the handled `try` has type `Extern<T>`, it gives that wrapper `Extern<T>` instead, as `EncloseTryLambda` does for the try block, so that `HandleValues` converts the value.
-
-| Example with expected type | Where is the implicit conversion applied? |
-|---|---|
-| `if (c) {1} else {"a"}` where `Extern<RT>` is expected | on each branch |
-| `if (c) {e} else {"a"}` where `Extern<RT>` is expected, with `e: Extern<RT>` | on the else branch, on `"a"` |
-| `if (c) {1}` where `Extern<RT>` is expected (no else) | type error: the `if` has type `Unit` |
-| `while (c) {}` where `Extern<RT>` is expected | type error: the loop has type `Unit` |
-| `synchronized (m) {1}` where `Extern<RT>` is expected | on the whole `synchronized` expression, after the lock is released |
-| `try {perform Stop(); 1} handle (_: Stop) {"h"}` for `Extern<RT>` is expected | on the last expression of the try body and the last expression of the handler |
-| `[1, 2]` where `Extern<RT>` is expected | the whole literal |
-| `[1, "a"]` where `Array<Extern<RT>>` is expected | on each element of the array |
-| `(1, 2)` where `(Extern<RT>, Int64)` is expected | on the first component |
-| `func foo(x!: Array<Extern<RT>> = [1])` | the element of the default value |
+`IsControlFlowExpr(node)` (file-local in `TypeChecker.cpp`) is true for `if`, `match`, `try`, blocks, parenthesized expressions, and loops (`Node::IsLoopExpr`). These are checked as usual. For `if`, `match`, `try`, blocks, and parenthesized expressions, the target `Extern<T>` is passed to the expressions that produce their values, so conversion applies to those values rather than to the whole node. Loops check their type `Unit` against the target as usual. `synchronized` is not included, so that it is converted as a whole and the conversion runs after the lock is released. A value of type `Unit` that doesn't come from a branch is therefore an error, as it is for any other target: a loop, an `if` without `else`, and a `try` with resources.
 
 ##### Overload ranking
 
@@ -776,7 +761,8 @@ ChkSubscriptExpr(se):                      // se is e[idx]
 ChkCallExpr(ce):                           // ce is e(args) or e.f(args)
     synthesize the callee e                // a dynamic callee e.f is accepted as it is
     if IsDynamicExternCall(ce):            // before candidate lookup
-        ChkExternCall(ce):
+        ChkExternCall(ce):                 // The arguments are passed to the foreign runtime as Array<Any>
+                                           // they may have any type but cannot be named nor inout.
             report named and inout arguments
             synthesize the arguments without a target
             ce.ty = e.ty
@@ -784,7 +770,8 @@ ChkCallExpr(ce):                           // ce is e(args) or e.f(args)
 SynAssignExpr(ae):                         // ae is a dynamic member/index update, including op=
     synthesize e                           // the receiver of the left value
     if IsDynamicExternUpdate(ae):          // before operator overloading
-        SynExternUpdate(ae):
+        SynExternUpdate(ae):               // The indices and the value are passed to the foreign runtime as Any,
+                                           // so they may have any type.
             synthesize the index and v without a target
             ae.leftValue.ty = e.ty
             ae.ty = Unit
@@ -839,7 +826,7 @@ visit(node):
     else if node is a dynamic expression:            // section 4.2.3
         node.desugarExpr = direct runtime call or compound-assignment expansion
         visit(node.desugarExpr)                      // the cloned operands get desugared here
-        skip the children of node                   // replaced by node.desugarExpr, never used
+        skip the children of node                    // these are not used anymore, replaced by node.desugarExpr
     else:
         if node expects Extern<T> for a value e: U:   // section 4.2.2
             e.desugarExpr = T.toExtern<U>(e)
@@ -887,7 +874,7 @@ visit(node):
         visit the children of node
 ```
 
-In `e.a.b(1)`, the call is replaced first, then `e.a.b` and `e.a` become nested runtime calls. In `f(e.a)`, the normal Cangjie call is preserved and its argument becomes `T.memberAccess(e, "a")`.
+In `e.a.b(1)`, the call is replaced first, then `e.a.b` and `e.a` become nested runtime calls: `T.functionCall(T.memberAccess(T.memberAccess(e, "a"), "b"), [1])`. In `f(e.a)`, the normal Cangjie call is preserved and its argument becomes `T.memberAccess(e, "a")`.
 
 ##### Compound assignment of an Extern variable or field
 
