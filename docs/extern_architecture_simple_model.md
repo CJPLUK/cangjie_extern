@@ -158,25 +158,6 @@ flowchart TB
 
 No changes in the compiler backend or any specific OS-specific features.
 
-### ABI/API compatibility
-
-- **New std.core API:** `Extern<T>`, `ForeignRuntime<T>`, exception classes — additive, no breaking change to existing APIs.
-- **New syntax:** Forced cast `(U)e` — purely additive.
-- **ABI:** `Extern<T>` is a `struct` holding an `Any` payload
-- **Backward compatibility:** Full compatible, including `ohos.ark_interop` code continues to work; migration is opt-in.
-
-### External user perception
-
-External developers will see new `Extern<T>`, `ForeignRuntime<R>` types and `(U)e` forced cast in the language documentation.
-
-### Performance impact
-
-| Aspect | Impact |
-| --- | --- |
-| **Compile time** | Parsing forced-cast, typing of Extern expressions and additional pass to desugar Extern expressions (~1500 loc); should negligible for typical projects |
-| **Runtime** | Each dynamic operation is a static call to `ForeignRuntime` method; runtime implementer is responsible for the design, implementation, and optimization of these methods |
-| **Space** | `Extern<T>` holds a single `Any` payload per handle. |
-
 ---
 
 ## 3. High level design
@@ -229,7 +210,7 @@ public struct Extern<T> where T <: ForeignRuntime<T> {
 
 The property `Extern<T>.getPayload(Extern<T>(v)) = v` holds for any value `v: Any` and `T <: ForeignRuntime<T>`.
 
-The default payload makes `this` fully initialized before the constructor body runs. The compiler lowers `getExtern` and `setExtern` to direct field reads and writes, bypassing dynamic `Extern` member-access/update desugaring.
+The default payload makes `this` fully initialized before the constructor body runs. The compiler lowers `getExtern` and `setExtern` to direct field reads and writes.
 
 #### `ForeignRuntime<T>` interface
 
@@ -269,7 +250,7 @@ public interface ForeignRuntime<T> where T <: ForeignRuntime<T> {
 2. `static func toExtern<R>(v: R): Extern<T>`
     - must throw `ExternConversionException` if a conversion exception occurs.
 3. `static func memberAccess(e: Extern<T>, field: String): Extern<T>`
-    - must throw `ExternMemberAccessException` for a non-existing member, or `ExternFunctionAccessException` for a non-existing function.
+    - must throw `ExternMemberAccessException` for a non-existing member.
 4. `static func indexedAccess(e: Extern<T>, arg: Any): Extern<T>`
     - must throw `ExternIndexedAccessException` for a wrong index.
 5. `static func memberUpdate(e: Extern<T>, field: String, value: Any): Unit`
@@ -277,7 +258,7 @@ public interface ForeignRuntime<T> where T <: ForeignRuntime<T> {
 6. `static func indexedUpdate(e: Extern<T>, field: Any, value: Any): Unit`
     - must throw `ExternIndexedAccessException` for a wrong index.
 7. `static func functionCall(e: Extern<T>, args: Array<Any>): Extern<T>`
-    - must throw `ExternFunctionAccessException` for a non-existing function, or `ExternFunctionCallException` for wrong arguments.
+    - must throw `ExternFunctionCallException` for wrong arguments.
 
 These functions must throw `ForeignRuntimeException` if execution in the external runtime throws an exception.
 
@@ -415,7 +396,6 @@ let w: Extern<R> = while (x > 0) {}               // type error: a loop has type
 let ints: Array<Int64> = [3]
 let arr: Array<Extern<R>> = ints                  // type error: expected Array<Extern<R>>, found Array<Int64>
 let fn: () -> Extern<R> = g                       // type error: expected () -> Extern<R>, found () -> Int64
-let sum: Extern<R> = x + "s"                      // type error: invalid binary operator '+' on Int64 and String
 match (e) {
     case 5 => ()                                  // type error: expected Extern<R>, found Int64
     case _ => ()
@@ -429,29 +409,28 @@ k(1)                                              // OK, calls k(p: Int64), whic
 
 ##### Dynamic operations
 
-For a value `e: Extern<T>`, reads and calls have type `Extern<T>`, while updates have type `Unit`.
+For a value `e: Extern<T>`, dynamic field accesses and dynamic calls have type `Extern<T>`, while dynamic updates have type `Unit`.
 
 | Operation | Rule | Result type |
 |---|---|---|
 | `e.f` | No compile-time check on field `f`. | `Extern<T>` |
-| `e[idx]` | Index must be well-typed expressions of any type. | `Extern<T>` |
-| `e(a1, ..., an)` | Arguments must be well-typed expressions of any type; named and `inout` arguments are rejected. | `Extern<T>` |
-| `e.f = v`, `e[idx] = v`, `e.f op= v`, `e[idx] op= v` | Index and `v` must be well-typed expressions of any type. | `Unit` |
+| `e[idx]` | Index must be well-typed expressions of `Any` type. | `Extern<T>` |
+| `e(a1, ..., an)` | Arguments must be well-typed expressions of `Any` type; named and `inout` arguments are rejected. | `Extern<T>` |
+| `e.f = v`, `e[idx] = v`, `e.f op= v`, `e[idx] op= v` | Index and `v` must be well-typed expressions of `Any` type. | `Unit` |
 
-Indices, arguments and update values do not implicitly call `toExtern`. Assignment to an `Extern<T>` variable follows ordinary assignment rules. Operators rewritten as member calls follow the dynamic-call rules; `++` and `--` require integer operands. Multiple assignment checks each update independently.
+Indices, arguments and update values do not implicitly call `toExtern`. Assignment to an `Extern<T>` variable follows ordinary assignment rules. Operators rewritten as member calls follow the dynamic-call rules. Multiple assignment checks each update independently.
 
 Examples, with `e: Extern<R>` and `x: Int64`:
 
 ```cangjie
 e.f                      // type Extern<R>
-e.f.g.h                  // type Extern<R>; each member access is dynamic, no compile-time check on fields `f`, `g`, `g`.
-e[0]["k"]                // type Extern<R>; each subscript is dynamic
-e[x, "k"]                // type Extern<R>; indices of any type
+e.f.g.h                  // type Extern<R>; each member access is dynamic, no compile-time check on fields `f`, `g`, `h`.
+e[0]["k"]                // type Extern<R>
 e(1, "a")                // type Extern<R>; e is called as a function
 e.f(1, "a")              // type Extern<R>; arguments will not be converted
 e.f(1)(2)                // type Extern<R>; the result is called again
 e.f { => 1 }             // type Extern<R>; the trailing lambda is an argument
-e.f(e.g)                 // type Extern<R>; Extern<R> arguments are passed as they are
+e.f(e.g)                 // type Extern<R>;
 e.f = e.g                // type Unit
 e[0] = "a"               // type Unit; value will not be converted
 e.f += 1                 // type Unit; literal 1 will not be converted
@@ -462,79 +441,53 @@ let i: Int64 = e.f       // type error: no implicit conversion from Extern<R>
 if (e < 1) {}            // type error: condition must be Bool
 e.f(p: 1)                // type error: named arguments are rejected
 e.f(inout x)             // type error: inout arguments are rejected
-e++                      // type error: integer required
 ```
 
 #### 3.2.3 Desugaring after SEMA
 
 ##### Forced cast
 
-At the desugaring stage the remaining operations `(U)e` are not ambiguous anymore and can be desugared as `T.fromExtern<U>(DESUGAR(e))`, for `e: Extern<T>` and `T <: ForeignRuntime<T>`. The desugaring function `DESUGAR` is defined below.
+At the desugaring stage the remaining operations `(U)e` are not ambiguous anymore and can be desugared as `T.fromExtern<U>(DESUGAR(e))`, for `e: Extern<T>` and `T <: ForeignRuntime<T>`. Note that expressions `e` needs to be desugared, e.g. it can be of the form `e1.foo`. The desugaring function `DESUGAR` is defined below.
 
 ##### Implicit conversion to `Extern<T>` <span id="implicit-conversion-to-externt"></span>
 
-`exp: U` accepted by the [implicit conversion](#implicit-conversion) rules, with `U` neither `Extern<T>` nor `Nothing`, becomes `T.toExtern<U>(exp)`, applied to:
+`exp: U` in a context where an expression of type `Extern<T>` is expected (see rules in the type checking section [above](#implicit-conversion)), with `U` neither `Extern<T>` nor `Nothing`, becomes `T.toExtern<U>(exp)`.
 
-- array or tuple literal: each element, to its element type; the whole literal if expected `Extern<T>`;
-- block, `if`, `match`, `try`: the expressions giving its value, never the whole expression;
-- `synchronized`: the whole expression, after the lock is released;
-- function or lambda body: its last expression.
-
-**Example 1**:
+Examples:
 Assume `cjexp` has type `U` with `U != Extern<T>`. Then:
 
-`let x: Extern<R> = cjexp` is desugared into `let x: Extern<R> = R.toExtern<U>(cjexp)`
-
-**Example 2**:
-
 ```cangjie
+let x: Extern<R> = cjexp
+// ~> 
+// let x: Extern<R> = R.toExtern<U>(cjexp)
+
 func foo(..., x: Extern<R>, ...) {...}
 foo(..., 42, ...)
-```
+// ~>
+// foo(..., R.toExtern<Int64>(42), ...)
 
-is desugared into
-
-```cangjie
-func foo(..., x: Extern<R>, ...) {...}
-foo(..., R.toExtern<Int64>(42), ...)
-```
-
-**Example 3**:
-
-```cangjie
 let x: Int64 = 42
 let a: Array<Extern<R>> = [x, 12]
+// ~> 
+// let a: Array<Extern<R>> = [R.toExtern<Int64>(x), R.toExtern<Int64>(12)]
 
 let b: Extern<R> = [x, 12]
-```
+// ~>
+// let b: Extern<R> = R.toExtern<Array<Int64>>([x, 12])
 
-is desugared into
-
-```cangjie
-let x: Int64 = 42
-let a: Array<Extern<R>> = [R.toExtern<Int64>(x), R.toExtern<Int64>(12)]
-
-let b: Extern<R> = R.toExtern<Array<Int64>>([x, 12])
-```
-
-**Example 4**
-
-```cangjie
 let x: Extern<R> = if (c) { 1 } else { "a" }
+// ~>
+// let x: Extern<R> = if (c) { R.toExtern<Int64>(1) } else { R.toExtern<String>("a") }
+
 let y: Extern<R> = match (n) {
     case 0 => println("zero"); 0
     case _ => e
 }
-```
-
-is desugared into
-
-```cangjie
-let x: Extern<R> = if (c) { R.toExtern<Int64>(1) } else { R.toExtern<String>("a") }
-let y: Extern<R> = match (n) {
-    case 0 => println("zero"); R.toExtern<Int64>(0)
-    case _ => e                                    // e: Extern<R> needs no conversion
-}
+// ~>
+// let y: Extern<R> = match (n) {
+//     case 0 => println("zero"); R.toExtern<Int64>(0)
+//     case _ => e                                    // e: Extern<R> needs no conversion
+// }
 ```
 
 ##### Dynamic Extern expression desugaring
@@ -548,21 +501,21 @@ DESUGAR(e1.f) ~> // if e1 has type Extern<T>
     T.memberAccess(DESUGAR(e1), "f")
 DESUGAR(e1.f = e2) ~> // if e1 has type Extern<T>
     T.memberUpdate(DESUGAR(e1), "f", DESUGAR(e2))
-DESUGAR(e1[i]) ~> // if e1 has type Extern<T>
-    T.indexedAccess(DESUGAR(e1), DESUGAR(i))
-DESUGAR(e1[i] = e2) ~> // if e1 has type Extern<T>
-    T.indexedUpdate(DESUGAR(e1), DESUGAR(i), DESUGAR(e2))
+DESUGAR(e1[e2]) ~> // if e1 has type Extern<T>
+    T.indexedAccess(DESUGAR(e1), DESUGAR(e2))
+DESUGAR(e1[e2] = e3) ~> // if e1 has type Extern<T>
+    T.indexedUpdate(DESUGAR(e1), DESUGAR(e2), DESUGAR(e3))
 DESUGAR(e1(e2, e3, ...)) ~> // if e1 has type Extern<T>
     T.functionCall(DESUGAR(e1), [DESUGAR(e2), DESUGAR(e3), ...])
 DESUGAR(e1.f op= e2) ~> // if e1 has type Extern<T>
     let tmp1 = DESUGAR(e1)
     let tmp2 = T.memberAccess(T.memberAccess(tmp1, "f"), "op")
     T.memberUpdate(tmp1, "f", T.functionCall(tmp2, [DESUGAR(e2)]))
-DESUGAR(e1[i] op= e2) ~> // if e1 has type Extern<T>
+DESUGAR(e1[e2] op= e3) ~> // if e1 has type Extern<T>
     let tmp1 = DESUGAR(e1)
-    let tmp2 = DESUGAR(i)
+    let tmp2 = DESUGAR(e2)
     let tmp3 = T.memberAccess(T.indexedAccess(tmp1, tmp2), "op")
-    T.indexedUpdate(tmp1, tmp2, T.functionCall(tmp3, [DESUGAR(e2)]))
+    T.indexedUpdate(tmp1, tmp2, T.functionCall(tmp3, [DESUGAR(e3)]))
 DESUGAR(lhs op= e2) ~> // if lhs: Extern<T> is a variable or a field of a non-Extern value
     lhs = DESUGAR(lhs`.op(e2)) // lhs` is mapped to lhs so its receiver is evaluated only once
 DESUGAR(base) ~> // expressions without smaller subexpressions are preserved as they are
@@ -572,9 +525,9 @@ DESUGAR(exp) ~> // otherwise, preserve structure and desugar subexpressions
 ```
 
 
-For non-`Extern` Cangjie expressions, `MAP(DESUGAR, exp)` preserves the outer expression and desugars its subexpressions. Indices, arguments and update values keep their own type and are not converted with `toExtern`, as stated in [dynamic operations](#dynamic-operations). The argument array passed to `functionCall` has type `Array<Any>`.
+For non-`Extern` Cangjie expressions, `MAP(DESUGAR, exp)` preserves the outer expression and desugars its subexpressions..
 
-The compound-assignment rules are discussed in [Section 3.2.4, Compound Assignment](#compound-assignment). Here `"op"` denotes the operator name without `=` (e.g. `"+"` for `+=`), and the temporaries are fresh names.
+The compound-assignment rules are discussed in detail in [Section 3.2.4, Compound Assignment](#compound-assignment). Here `"op"` denotes the operator name without `=` (e.g. `"+"` for `+=`), and the temporaries are fresh names.
 
 The generated calls follow standard Cangjie evaluation order. Compound-assignment expansions use temporaries so that the receiver and index are evaluated only once.
 
@@ -684,18 +637,19 @@ Compound assignment to a dynamic member or index needs an explicit read/call/wri
 
 ###### Case 1
 
-Let `x: Extern<T>` be a mutable variable and `e2: Extern<T>`, then:
+Let `lhs: Extern<T>` be a mutable variable, or a non-dynamic extern operation of type `Extern<T>` (e.g. `foo.f1.e2` of type `Extern<T>`, where `foo` and `foo.f1` are not of non-Extern type) and `cjexp` of any type, then:
 
 ```cangjie
-x += e2
+x += cjexp
 ```
 
 is desugared into
 
 ```cangjie
-let tmp1 = T.memberAccess(x, "+")
-x = T.functionCall(tmp1, [e2])
+x = T.functionCall(T.memberAccess(x`, "+"), [cjexp])
 ```
+
+``x` `` above represents a reference to the expression ``x` ``. Compiler already has support for this.
 
 ###### Case 2
 
