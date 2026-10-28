@@ -662,13 +662,14 @@ The same expansions apply to other compound operators, using the operator name w
 ## 4. Detailed Implementation Plan
 
 Section 3 defined which `Extern` expressions the compiler accepts and what they are rewritten into. This section
-describes how that is implemented in `cjc`. The work is split between two stages: Sema only accepts the implicit
-conversions and dynamic operations and gives them their types, without rewriting anything; all rewrites then happen
-in one pass after Sema, driven by the final types.
+describes how that is implemented in `cjc`. The work is split between three stages: Sema only accepts the implicit
+conversions and dynamic operations and gives them their types, without rewriting anything; the new `DesugarExtern`
+pass then rewrites them in one pass after Sema, driven by the final types; finally, the translation to CHIR lowers the
+`getExtern` and `setExtern` intrinsics used inside `Extern<T>`.
 
 - [4.1. Type checking](#41-type-checking): the Sema changes.
 - [4.2. Desugaring](#42-desugaring): the new `DesugarExtern` pass and the ASTs it generates.
-- [4.3. Helpers](#43-helpers): functions shared by both stages.
+- [4.3. Helpers](#43-helpers): functions shared by Sema and `DesugarExtern`.
 - [4.4. CHIR lowering of `getExtern` and `setExtern`](#44-chir-lowering-of-getextern-and-setextern): how the intrinsic functions `getExtern(e)` and `setExtern(e, v)` are desugared into concrete CHIR operations.
 
 The implementation of the forced cast is described in [Appendix A.5](#appendix-a5) (out of review scope).
