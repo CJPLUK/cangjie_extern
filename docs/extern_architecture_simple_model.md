@@ -37,10 +37,12 @@ func testCJ(runtime: JSContext, callInfo: JSCallInfo): Unit {
 ```cangjie
 func testCJ(vm: Extern<T>): Unit where T <: ForeignRuntime<T> {
     let calculator: Extern<T> = vm.calculator
-    let result: Float64 = (Float64)calculator.add(2, 3.5)
+    let result: Float64 = T.fromExtern<Float64>(calculator.add(2, 3.5))
     println("Result: ${result}")
 }
 ```
+
+The shorthand `(Float64)calculator.add(2, 3.5)` for the explicit `fromExtern` call is described in [Appendix A](#appendix-a) (out of review scope).
 
 ### Design philosophy
 
@@ -50,7 +52,7 @@ func testCJ(vm: Extern<T>): Unit where T <: ForeignRuntime<T> {
 - Cangjie makes no assumptions about foreign value layout; the runtime owns semantics.
 - Dynamic features (member access, call, index) are compiler-desugared to static `ForeignRuntime` calls.
 - Cangjie values are implicitly converted to `Extern<T>` when an `Extern<T>` is expected.
-- `e: Extern<T>` needs to be explicitly converted to Cangjie through a forced cast operator of the form `(U)e`.
+- `e: Extern<T>` needs to be explicitly converted to Cangjie through `T.fromExtern<U>(e)`.
 
 ### Major benefits
 
@@ -92,8 +94,8 @@ flowchart TB
         CHIR["CHIR (7)<br/><br/><p style='text-align:left'>getExtern / setExtern intrinsics</p>"]
         CodeGen["Code Generation"]
         SaveResults["Save Results"]
-        style Parser fill:#fa7c5c
-        style MacroExpand fill:#fa7c5c
+        style Parser fill:#ffe066
+        style MacroExpand fill:#ffe066
         style DesugarAfterSema fill:#fa7c5c
         style CHIR fill:#fa7c5c
         style Sema fill:#fa7c5c
@@ -101,12 +103,12 @@ flowchart TB
 
     subgraph StdAST["std.ast (2)"]
         ForcedCastExpr["ForcedCastExpr<br/>class"]
-        style ForcedCastExpr fill:#fa7c5c
+        style ForcedCastExpr fill:#ffe066
     end
 
     subgraph StdCore["std.core (1)"]
         ExternType["Extern&lt;T&gt;<br/>struct"]
-        Exc["Exception<br/>hierarchy"]
+        Exc["Exceptions"]
         FRT["ForeignRuntime&lt;T&gt;<br/>interface"]
         style ExternType fill:#fa7c5c
         style Exc fill:#fa7c5c
@@ -143,14 +145,16 @@ flowchart TB
     style Compiler fill:#c1e1e3
 ```
 
+The yellow boxes change only to support the forced cast, described in [Appendix A](#appendix-a) (out of review scope).
+
 ### Changes 
 
 | Component | Role |
 | --- | --- |
 | `cangjie_runtime` - std.core | (1) New file [`extern_runtime.cj`](https://github.com/CJPLUK/cangjie_runtime/compare/469f9ebc73959d3eb8d2b79b424aeceaf492bb94...feature_extern_simple_model#diff-515353015ae80d6a51e0732df3b0e55484e5d9beb4708440b17be668f06d370e) in `std.core` with `Extern<T>` struct, `ForeignRuntime<T>` interface, new exceptions, and documentation about new public declarations. |
-| `cangjie_runtime` - std.ast | (2) New `ForcedCastExpr <: Expr` class. Class declaration, flatbuffers serialization. |
-| `cangjie_compiler` - Parser | (3) Parse forced cast `(U)e` expressions as `ForcedCastExpr`. Note, that at this point we still don't know if we have a forced cast or a call expression of the form `(f)(x)` - this decision is postponed to SEMA. |
-| `cangjie_compiler` - Macro Expand | (4) Add support for new ForcedCastExpr expressions, including flatbuffers serialization. |
+| `cangjie_runtime` - std.ast | (2) Forced cast only, see [Appendix A.2](#appendix-a2) (out of review scope). |
+| `cangjie_compiler` - Parser | (3) Forced cast only, see [Appendix A.2](#appendix-a2) (out of review scope). |
+| `cangjie_compiler` - Macro Expand | (4) Forced cast only, see [Appendix A.2](#appendix-a2) (out of review scope). |
 | `cangjie_compiler` - Sema | (5) Type checking of Extern expressions and annotate Extern expression that need desugaring. Typing rules in section [3.2.2. Type Checking Rules](#322-type-checking-rules). Implementation details in [4.1. Type checking](#41-type-checking): rejecting extensions of `Extern` ([4.1.1](#411-extern-cannot-be-extended)), implicit conversions and overload ranking ([4.1.2](#412-implicit-conversions)), dynamic operations ([4.1.3](#413-dynamic-operations)). Shared helpers in [4.3. Helpers](#43-helpers). |
 | `cangjie_compiler` - Desugar After Sema | (6) Additional pass to desugar annotated Extern expressions. Desugaring rules in section [3.2.3. Desugaring after sema](#323-desugaring-after-sema). Implementation details in [4.2. Desugaring](#42-desugaring): the new `DesugarExtern` pass ([4.2.1](#421-the-pass)), implicit conversions ([4.2.2](#422-implicit-conversions)), dynamic operations and compound assignments ([4.2.3](#423-dynamic-operations)), the generated calls ([4.2.4](#424-the-generated-calls)). Shared helpers in [4.3. Helpers](#43-helpers). |
 | `cangjie_compiler` - CHIR | (7) Lower the `getExtern` and `setExtern` intrinsics to direct reads and writes of the `Extern<T>.payload` field, bypassing dynamic member-access/update desugaring. Implementation details in [4.4. CHIR lowering of `getExtern` and `setExtern`](#44-chir-lowering-of-getextern-and-setextern). |
@@ -168,7 +172,7 @@ Consider the following a motivational example for this section.
 // vm: Extern<T>, T <: ForeignRuntime
 let calculator : Extern<T> = vm.calculator
 let sum        : Extern<T> = calculator.add(2, 3.5)
-let result     : Float64   = (Float64)sum
+let result     : Float64   = T.fromExtern<Float64>(sum)
 ```
 
 During compilation, the example above is desugared as follows.
@@ -229,7 +233,7 @@ public interface ForeignRuntime<T> where T <: ForeignRuntime<T> {
 }
 ```
 
-#### Exception hierarchy (all in `std.core`) <span id="exception-hierarchy-all-in-stdcore"></span>
+#### Exceptions (all in `std.core`) <span id="exception-hierarchy-all-in-stdcore"></span>
 
 | Exception | When raised |
 | --- | --- |
@@ -281,42 +285,12 @@ public class MockRT <: ForeignRuntime<MockRT> {
 
 #### 3.2.1 Parsing <span id="parsing"></span>
 
-Support for forced cast `(U)e` requires the addition of an AST node. At parsing time the syntax is ambiguous and the
-parser cannot decide between a forced cast or a call expression of the form `(f)(x)` - this decision is postponed to
-SEMA. We add `struct AmbiguousForcedCastExpr : Expr` which holds both readings to `include/cangjie/AST/Node.h`.
-
-```cpp
-struct AmbiguousForcedCastExpr : Expr {
-    OwnedPtr<Type> type;      /**< `U` parsed as a type (null if not a valid type). */
-    OwnedPtr<Expr> leftExpr;  /**< `U` parsed as an expression (null if not a valid expr). */
-    OwnedPtr<Expr> rightExpr; /**< Operand, shared by both readings. */
-    ...
-}
-```
-
-Support for the new AST node needs to be added in the compiler macro stage. That includes adding support for it in the
-serialization/deserialization process and also adding it to the Cangjie AST library.
-
-A preliminary implementation can be found
-[here](https://gitcode.com/alksjhdgf/cangjie_compiler_fc/commit/409039511add9fbef51ccc8991ab2c58d8b1ae31?ref=extern_forced_cast).
+The features under review need no parser changes. The forced cast `(U)e` needs a new AST node, described in
+[Appendix A.3](#appendix-a3) (out of review scope).
 
 #### 3.2.2 Type checking rules
 
-##### Forced cast
-
-| Condition for `(U)e` | Rule |
-|---|---|
-| `U` resolves to a type and `e: Extern<T>` with `T <: ForeignRuntime<T>` | Accept; result type is `U`. |
-| `U` resolves to a function and `e` is a parenthesized argument list | Check as an ordinary function call. |
-| Neither reading succeeds | Type error. |
-
-Examples, with `e: Extern<R>` and `f` a function:
-
-```cangjie
-(Int64)e    // forced cast; type Int64
-(f)(e)      // ordinary function call
-(Int64)1    // type error: operand is not Extern
-```
+The type checking rules for the forced cast are described in [Appendix A.4](#appendix-a4) (out of review scope).
 
 ##### Extensions of `Extern`
 
@@ -445,9 +419,7 @@ e.f(inout x)             // type error: inout arguments are rejected
 
 #### 3.2.3 Desugaring after SEMA
 
-##### Forced cast
-
-At the desugaring stage the remaining operations `(U)e` are not ambiguous anymore and can be desugared as `T.fromExtern<U>(DESUGAR(e))`, for `e: Extern<T>` and `T <: ForeignRuntime<T>`. Note that expressions `e` needs to be desugared, e.g. it can be of the form `e1.foo`. The desugaring function `DESUGAR` is defined below.
+The desugaring of the forced cast is described in [Appendix A.5](#appendix-a5) (out of review scope).
 
 ##### Implicit conversion to `Extern<T>` <span id="implicit-conversion-to-externt"></span>
 
@@ -495,8 +467,6 @@ let y: Extern<R> = match (n) {
 The desugaring of `Extern` expressions is performed according to the `DESUGAR` function defined below, where `~>` means "is defined as". Each dynamic operation becomes a direct static call to the corresponding `ForeignRuntime<T>` function.
 
 ```cangjie
-DESUGAR((U)exp) ~>
-    T.fromExtern<U>(DESUGAR(exp))
 DESUGAR(e1.f) ~> // if e1 has type Extern<T>
     T.memberAccess(DESUGAR(e1), "f")
 DESUGAR(e1.f = e2) ~> // if e1 has type Extern<T>
@@ -691,11 +661,10 @@ The same expansions apply to other compound operators, using the operator name w
 
 ## 4. Detailed Implementation Plan
 
-The compiler introduces three rewrites:
+The compiler introduces two rewrites (a third one, for the forced cast, is described in [Appendix A.5](#appendix-a5), out of review scope):
 
 | Rewrite | Source | Result |
 |---|---|---|
-| Forced cast | `(U)e` with `e: Extern<T>` | `T.fromExtern<U>(DESUGAR(e))` |
 | Implicit conversion | `e: U` where `Extern<T>` is expected | `T.toExtern<U>(e)` |
 | Dynamic operation | `e.f`, `e[i]`, `e(args)`, `e.f = v`, `e[i] = v`, `e.f op= v`, `e[i] op= v` with `e: Extern<T>` | Direct calls to `T.memberAccess`, `T.indexedAccess`, `T.functionCall`, `T.memberUpdate` and `T.indexedUpdate`, with temporaries for compound assignments |
 
@@ -819,11 +788,7 @@ for (auto& pkg : pkgs) {
 
 ```text
 visit(node):
-    if node is a forced cast (U)e:
-        node.desugarExpr = T.fromExtern<U>(clone(e))
-        visit(node.desugarExpr)
-        skip the children of node
-    else if node is a dynamic expression:            // section 4.2.3
+    if node is a dynamic expression:                 // section 4.2.3
         node.desugarExpr = direct runtime call or compound-assignment expansion
         visit(node.desugarExpr)                      // the cloned operands get desugared here
         skip the children of node                    // these are not used anymore, replaced by node.desugarExpr
@@ -1003,7 +968,7 @@ let a: Extern<T> = [1, 2, 3]
 // T.toExtern<Array<Int64>>([1, 2, 3])
 ```
 
-A naive `toExtern` builds the foreign array one element at a time. Copying the buffer in one go costs a single FFI call for the whole array; the dual is `(Array<Int64>)a` in `fromExtern`.
+A naive `toExtern` builds the foreign array one element at a time. Copying the buffer in one go costs a single FFI call for the whole array; the dual is `fromExtern<Array<Int64>>(a)`.
 
 ---
 
@@ -1016,4 +981,102 @@ The `Extern<T>` feature introduces a language-level interoperability mechanism t
 3. Provides precise, typed exceptions for foreign operation failures.
 4. Generalizes beyond ArkTS to any foreign runtime.
 
-The compiler implementation ([Git code PR #1871](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317)) adds forced cast parsing, `DesugarExtern.cpp`, and Sema support. The standard library adds `Extern<T>`, `ForeignRuntime<T>`, and exception classes to `std.core`. CI validation has passed.
+The compiler implementation ([Git code PR #1871](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317)) adds `DesugarExtern.cpp` and Sema support, plus the forced cast parsing described in [Appendix A](#appendix-a). The standard library adds `Extern<T>`, `ForeignRuntime<T>`, and exception classes to `std.core`. CI validation has passed.
+
+---
+
+## Appendix A. Forced cast `(U)e` <span id="appendix-a"></span>
+
+> **Out of review scope.** This appendix is part of the design but is not under discussion in this review.
+
+A separate proposal, [Unified Casting](https://github.com/CJPLUK/proposals/blob/main/casts.md), introduces a unified
+Cangjie cast `e as! U` that can replace the forced cast described here. `e as! U` has type `U` and throws a
+`TypeConversionException` when the runtime type of `e` is not a subtype of `U`. It also subsumes the constructor-style
+numeric conversions such as `UInt32(c)`. When `e: Extern<T>`, `e as! U` converts the value by calling
+`T.fromExtern<U>(e)`, i.e. it has the semantics of `(U)e`. That proposal includes the removal of the forced cast `(U)e`
+from `Extern`, which avoids the parsing ambiguity between `(U)e` and a call `(f)(x)` described in
+[A.3](#appendix-a3), and the need for the `AmbiguousForcedCastExpr` node.
+
+### A.1. Motivation <span id="appendix-a1"></span>
+
+The forced cast `(U)e`, for `e: Extern<T>`, is a shorthand for the explicit conversion `T.fromExtern<U>(e)`. With it,
+the motivational example of [section 3](#3-high-level-design) reads:
+
+```cangjie
+let result     : Float64   = (Float64)sum   // desugared to T.fromExtern<Float64>(sum)
+```
+
+### A.2. Impact <span id="appendix-a2"></span>
+
+The forced cast is the only reason for the changes in the yellow boxes of the diagram in
+[Position in the system](#position-in-the-system), and for the `ForcedCastExpr` class in `std.ast`.
+
+| Component | Role |
+| --- | --- |
+| `cangjie_runtime` - std.ast | (2) New `ForcedCastExpr <: Expr` class. Class declaration, flatbuffers serialization. |
+| `cangjie_compiler` - Parser | (3) Parse forced cast `(U)e` expressions as `ForcedCastExpr`. Note, that at this point we still don't know if we have a forced cast or a call expression of the form `(f)(x)` - this decision is postponed to SEMA. |
+| `cangjie_compiler` - Macro Expand | (4) Add support for new ForcedCastExpr expressions, including flatbuffers serialization. |
+
+### A.3. Parsing <span id="appendix-a3"></span>
+
+Support for forced cast `(U)e` requires the addition of an AST node. At parsing time the syntax is ambiguous and the
+parser cannot decide between a forced cast or a call expression of the form `(f)(x)` - this decision is postponed to
+SEMA. We add `struct AmbiguousForcedCastExpr : Expr` which holds both readings to `include/cangjie/AST/Node.h`.
+
+```cpp
+struct AmbiguousForcedCastExpr : Expr {
+    OwnedPtr<Type> type;      /**< `U` parsed as a type (null if not a valid type). */
+    OwnedPtr<Expr> leftExpr;  /**< `U` parsed as an expression (null if not a valid expr). */
+    OwnedPtr<Expr> rightExpr; /**< Operand, shared by both readings. */
+    ...
+}
+```
+
+Support for the new AST node needs to be added in the compiler macro stage. That includes adding support for it in the
+serialization/deserialization process and also adding it to the Cangjie AST library.
+
+A preliminary implementation can be found
+[here](https://gitcode.com/alksjhdgf/cangjie_compiler_fc/commit/409039511add9fbef51ccc8991ab2c58d8b1ae31?ref=extern_forced_cast).
+
+### A.4. Type checking <span id="appendix-a4"></span>
+
+| Condition for `(U)e` | Rule |
+|---|---|
+| `U` resolves to a type and `e: Extern<T>` with `T <: ForeignRuntime<T>` | Accept; result type is `U`. |
+| `U` resolves to a function and `e` is a parenthesized argument list | Check as an ordinary function call. |
+| Neither reading succeeds | Type error. |
+
+Examples, with `e: Extern<R>` and `f` a function:
+
+```cangjie
+(Int64)e    // forced cast; type Int64
+(f)(e)      // ordinary function call
+(Int64)1    // type error: operand is not Extern
+```
+
+### A.5. Desugaring <span id="appendix-a5"></span>
+
+At the desugaring stage the remaining operations `(U)e` are not ambiguous anymore and can be desugared as `T.fromExtern<U>(DESUGAR(e))`, for `e: Extern<T>` and `T <: ForeignRuntime<T>`. Note that expressions `e` needs to be desugared, e.g. it can be of the form `e1.foo`. This adds one rule to the `DESUGAR` function of [section 3.2.3](#323-desugaring-after-sema):
+
+```cangjie
+DESUGAR((U)exp) ~>
+    T.fromExtern<U>(DESUGAR(exp))
+```
+
+and one rewrite to the table of [section 4](#4-detailed-implementation-plan):
+
+| Rewrite | Source | Result |
+|---|---|---|
+| Forced cast | `(U)e` with `e: Extern<T>` | `T.fromExtern<U>(DESUGAR(e))` |
+
+In the `DesugarExtern` pass of [section 4.2.1](#421-the-pass), the forced cast is handled by a first branch of `visit`, before the dynamic expressions:
+
+```text
+visit(node):
+    if node is a forced cast (U)e:
+        node.desugarExpr = T.fromExtern<U>(clone(e))
+        visit(node.desugarExpr)
+        skip the children of node
+    else if node is a dynamic expression:
+        ...
+```
