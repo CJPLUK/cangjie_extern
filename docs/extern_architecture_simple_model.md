@@ -661,14 +661,17 @@ The same expansions apply to other compound operators, using the operator name w
 
 ## 4. Detailed Implementation Plan
 
-The compiler introduces two rewrites (a third one, for the forced cast, is described in [Appendix A.5](#appendix-a5), out of review scope):
+Section 3 defined which `Extern` expressions the compiler accepts and what they are rewritten into. This section
+describes how that is implemented in `cjc`. The work is split between two stages: Sema only accepts the implicit
+conversions and dynamic operations and gives them their types, without rewriting anything; all rewrites then happen
+in one pass after Sema, driven by the final types.
 
-| Rewrite | Source | Result |
-|---|---|---|
-| Implicit conversion | `e: U` where `Extern<T>` is expected | `T.toExtern<U>(e)` |
-| Dynamic operation | `e.f`, `e[i]`, `e(args)`, `e.f = v`, `e[i] = v`, `e.f op= v`, `e[i] op= v` with `e: Extern<T>` | Direct calls to `T.memberAccess`, `T.indexedAccess`, `T.functionCall`, `T.memberUpdate` and `T.indexedUpdate`, with temporaries for compound assignments |
+- [4.1. Type checking](#41-type-checking): the Sema changes.
+- [4.2. Desugaring](#42-desugaring): the new `DesugarExtern` pass and the ASTs it generates.
+- [4.3. Helpers](#43-helpers): functions shared by both stages.
+- [4.4. CHIR lowering of `getExtern` and `setExtern`](#44-chir-lowering-of-getextern-and-setextern): how the intrinsic functions `getExtern(e)` and `setExtern(e, v)` are desugared into concrete CHIR operations.
 
-Sema only accepts these expressions and gives them their types. The rewrites happen in one pass after Sema, driven by the final types.
+The implementation of the forced cast is described in [Appendix A.5](#appendix-a5) (out of review scope).
 
 ### 4.1. Type checking
 
