@@ -86,18 +86,17 @@ flowchart TB
         MacroExpand["Macro Expand (4)<br/><br/><p style='text-align:left'>add support for forced cast</p>"]
         ASTDiff["AST Diff"]
         Sema["Sema (5)<br/><br/><p style='text-align:left'>type checking of Extern expressions</p>"]
-        DesugarAfterSema["DesugarAfterSema (6)<br/><br/><p style='text-align:left'>set .desugarExpr field with desugared Extern expr</p>"]
+        DesugarAfterSema["DesugarAfterSema (6)<br/><br/><p style='text-align:left'>set .desugarExpr field with desugared Extern expr<br/>getExtern / setExtern intrinsics</p>"]
         GenericInstantiation["Generic Instantiation"]
         OverflowStrategy["Overflow Strategy"]
         Mangling["Mangling"]
         SaveCJO["Save CJO"]
-        CHIR["CHIR (7)<br/><br/><p style='text-align:left'>getExtern / setExtern intrinsics</p>"]
+        CHIR["CHIR"]
         CodeGen["Code Generation"]
         SaveResults["Save Results"]
         style Parser fill:#ffe066
         style MacroExpand fill:#ffe066
         style DesugarAfterSema fill:#fa7c5c
-        style CHIR fill:#fa7c5c
         style Sema fill:#fa7c5c
     end
 
@@ -156,8 +155,7 @@ The yellow boxes change only to support the forced cast, described in [Appendix 
 | `cangjie_compiler` - Parser | (3) Forced cast only, see [Appendix A.2](#appendix-a2) (out of review scope). |
 | `cangjie_compiler` - Macro Expand | (4) Forced cast only, see [Appendix A.2](#appendix-a2) (out of review scope). |
 | `cangjie_compiler` - Sema | (5) Type checking of Extern expressions and annotate Extern expression that need desugaring. Typing rules in section [3.2.2. Type Checking Rules](#322-type-checking-rules). Implementation details in [4.1. Type checking](#41-type-checking): rejecting extensions of `Extern` ([4.1.1](#411-extern-cannot-be-extended)), implicit conversions and overload ranking ([4.1.2](#412-implicit-conversions)), dynamic operations ([4.1.3](#413-dynamic-operations)). Shared helpers in [4.3. Helpers](#43-helpers). |
-| `cangjie_compiler` - Desugar After Sema | (6) Additional pass to desugar annotated Extern expressions. Desugaring rules in section [3.2.3. Desugaring after sema](#323-desugaring-after-sema). Implementation details in [4.2. Desugaring](#42-desugaring): the new `DesugarExtern` pass ([4.2.1](#421-the-pass)), implicit conversions ([4.2.2](#422-implicit-conversions)), dynamic operations and compound assignments ([4.2.3](#423-dynamic-operations)), the generated calls ([4.2.4](#424-the-generated-calls)). Shared helpers in [4.3. Helpers](#43-helpers). |
-| `cangjie_compiler` - CHIR | (7) Lower the `getExtern` and `setExtern` intrinsics to direct reads and writes of the `Extern<T>.payload` field, bypassing dynamic member-access/update desugaring. Implementation details in [4.4. CHIR lowering of `getExtern` and `setExtern`](#44-chir-lowering-of-getextern-and-setextern). |
+| `cangjie_compiler` - Desugar After Sema | (6) Additional pass to desugar annotated Extern expressions. Desugaring rules in section [3.2.3. Desugaring after sema](#323-desugaring-after-sema). Implementation details in [4.2. Desugaring](#42-desugaring): the new `DesugarExtern` pass ([4.2.1](#421-the-pass)), implicit conversions ([4.2.2](#422-implicit-conversions)), dynamic operations and compound assignments ([4.2.3](#423-dynamic-operations)), the generated calls ([4.2.4](#424-the-generated-calls)). Shared helpers in [4.3. Helpers](#43-helpers). Also desugars the `getExtern` and `setExtern` intrinsics into direct reads and writes of the `Extern<T>.payload` field, bypassing the dynamic member-access/update desugaring, see [4.4. Desugaring of `getExtern` and `setExtern`](#44-desugaring-of-getextern-and-setextern). |
 | `cangjie_tools` | Consequence of (1). Some LSP tests golden files need to be updated because of additional new public declarations in std.core. |
 
 No changes in the compiler backend or any specific OS-specific features.
@@ -214,7 +212,7 @@ public struct Extern<T> where T <: ForeignRuntime<T> {
 
 The property `Extern<T>.getPayload(Extern<T>(v)) = v` holds for any value `v: Any` and `T <: ForeignRuntime<T>`.
 
-The default payload makes `this` fully initialized before the constructor body runs. The compiler lowers `getExtern` and `setExtern` to direct field reads and writes.
+The default payload makes `this` fully initialized before the constructor body runs. After Sema, the compiler desugars `getExtern` and `setExtern` into direct field reads and writes.
 
 #### `ForeignRuntime<T>` interface
 
@@ -662,15 +660,16 @@ The same expansions apply to other compound operators, using the operator name w
 ## 4. Detailed Implementation Plan
 
 Section 3 defined which `Extern` expressions the compiler accepts and what they are rewritten into. This section
-describes how that is implemented in `cjc`. The work is split between three stages: Sema only accepts the implicit
-conversions and dynamic operations and gives them their types, without rewriting anything; the new `DesugarExtern`
-pass then rewrites them in one pass after Sema, driven by the final types; finally, the translation to CHIR lowers the
-`getExtern` and `setExtern` intrinsics used inside `Extern<T>`.
+describes how that is implemented in `cjc`. The work is split between two stages: Sema only accepts the implicit
+conversions and dynamic operations and gives them their types, without rewriting anything; the desugaring after Sema
+then rewrites the `getExtern` and `setExtern` intrinsics used inside `Extern<T>` into payload field accesses, and the
+new `DesugarExtern` pass rewrites the dynamic operations and implicit conversions in one pass, driven by the final types.
+CHIR and the backend are unchanged.
 
 - [4.1. Type checking](#41-type-checking): the Sema changes.
 - [4.2. Desugaring](#42-desugaring): the new `DesugarExtern` pass and the ASTs it generates.
 - [4.3. Helpers](#43-helpers): functions shared by Sema and `DesugarExtern`.
-- [4.4. CHIR lowering of `getExtern` and `setExtern`](#44-chir-lowering-of-getextern-and-setextern): how the intrinsic functions `getExtern(e)` and `setExtern(e, v)` are desugared into concrete CHIR operations.
+- [4.4. Desugaring of `getExtern` and `setExtern`](#44-desugaring-of-getextern-and-setextern): how the intrinsic functions `getExtern(e)` and `setExtern(e, v)` are desugared into accesses of the payload field.
 
 The implementation of the forced cast is described in [Appendix A.5](#appendix-a5) (out of review scope).
 
@@ -783,7 +782,7 @@ for (auto& pkg : pkgs) {
 
 | # | Pass | Before | After |
 |---|---|---|---|
-| 1 | `PerformDesugarAfterTypeCheck`: interop, declarations, and per-node rewrites such as `is`/`as`, ranges, string interpolation | `e is T` | `match (e) { case _: T => true case _ => false }` |
+| 1 | `PerformDesugarAfterTypeCheck`: interop, declarations, and per-node rewrites such as `is`/`as`, ranges, string interpolation, intrinsic calls including `getExtern`/`setExtern` ([4.4](#44-desugaring-of-getextern-and-setextern)) | `e is T` | `match (e) { case _: T => true case _ => false }` |
 | 2 | `TryDesugarForCoalescing` | `opt ?? 11` | `match (opt) { case Some(x) => x case None => 11 }` |
 | 3 | `DesugarExtern` **(new)** | `let e: Extern<RT> = 1` | `let e: Extern<RT> = RT.toExtern<Int64>(1)` |
 | 4 | `AutoBoxing::AddOptionBox` | `let o: ?Int64 = 1` | `let o: ?Int64 = Some(1)` |
@@ -928,16 +927,19 @@ Operands retain their own types, even where the parameter is `Any`. Passing them
   bool IsDynamicExternUpdate(const AssignExpr& ae);
   ```
 
-### 4.4. CHIR lowering of `getExtern` and `setExtern`
+### 4.4. Desugaring of `getExtern` and `setExtern`
 
-In `std.core`, `this.payload` would be a dynamic member access, so `Extern<T>` uses the intrinsics `getExtern` and `setExtern` instead. `TranslateIntrinsicCall` lowers them to direct accesses of member `0`, the payload; they never appear as `Intrinsic` expressions in CHIR.
+In `std.core`, Sema would type `this.payload` as a dynamic member access (section 4.1.3), so `Extern<T>` uses the intrinsics `getExtern` and `setExtern` instead. After Sema, `DesugarIntrinsicCallExpr` in [CallExpr.cpp](https://github.com/CJPLUK/cangjie_compiler/blob/feature_extern_simple_model/src/Sema/Desugar/AfterTypeCheck/CallExpr.cpp) recognizes the two `std.core` intrinsics by name and calls `DesugarExternPayloadIntrinsic`, which sets the `desugarExpr` of the call:
 
-| Call | Translation | CHIR |
+| Call | Desugared | Type |
 |---|---|---|
-| `getExtern(e)` | `TranslateGetExtern`: `e` as a value | `%p: Any = Field(%e, 0)` |
-| `setExtern(e, v)` | `TranslateSetExtern`: `e` as a left value, `v` boxed to `Any` | `StoreElementRef(%v, %r, 0)`, then `Constant(unit)` |
+| `getExtern(e)` | `e.payload` | `Any` |
+| `setExtern(e, v)` | `e.payload = v`, with `e.payload` marked `LEFT_VALUE` | `Unit` |
+| either, with `e: Nothing` | `e` | `Nothing` |
 
-The new kinds `GET_EXTERN` and `SET_EXTERN` are registered in `coreIntrinsicMap` and appended after `EXCLUSIVE_SCOPE`. They are not added to `schema/StdxChirFormat.fbs`, as they are never serialized.
+The member access is created with `CreateMemberAccess`, which binds its `target` to the `payload` declaration of `Extern<T>`. `IsDynamicExternMemberAccess` and `IsDynamicExternUpdate` (section 4.3) only match member accesses without a target, so `DesugarExtern`, which runs later in the same stage (section 4.2.1), leaves these accesses unchanged. The translation to CHIR then handles them as ordinary struct field reads and writes. No new intrinsic kind is added to CHIR. The names `payload`, `getExtern` and `setExtern` are the new constants `STD_LIB_EXTERN_PAYLOAD`, `STD_LIB_GET_EXTERN` and `STD_LIB_SET_EXTERN` in [ConstantsUtils.h](https://github.com/CJPLUK/cangjie_compiler/blob/feature_extern_simple_model/include/cangjie/Utils/ConstantsUtils.h).
+
+An argument `e` of type `Nothing` ends control flow, so neither the payload nor `v` is accessed and the call is replaced by `e` alone.
 
 ---
 
