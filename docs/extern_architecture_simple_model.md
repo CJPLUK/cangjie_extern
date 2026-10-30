@@ -91,12 +91,13 @@ flowchart TB
         OverflowStrategy["Overflow Strategy"]
         Mangling["Mangling"]
         SaveCJO["Save CJO"]
-        CHIR["CHIR"]
+        CHIR["CHIR (7)<br/><br/><p style='text-align:left'>dereference mapped arguments of compound assignment</p>"]
         CodeGen["Code Generation"]
         SaveResults["Save Results"]
         style Parser fill:#ffe066
         style MacroExpand fill:#ffe066
         style DesugarAfterSema fill:#fa7c5c
+        style CHIR fill:#fa7c5c
         style Sema fill:#fa7c5c
     end
 
@@ -154,8 +155,9 @@ The yellow boxes change only to support the forced cast, described in [Appendix 
 | `cangjie_runtime` - std.ast | (2) Forced cast only, see [Appendix A.2](#appendix-a2) (out of review scope). |
 | `cangjie_compiler` - Parser | (3) Forced cast only, see [Appendix A.2](#appendix-a2) (out of review scope). |
 | `cangjie_compiler` - Macro Expand | (4) Forced cast only, see [Appendix A.2](#appendix-a2) (out of review scope). |
-| `cangjie_compiler` - Sema | (5) Type checking of Extern expressions and annotate Extern expression that need desugaring. Typing rules in section [3.2.2. Type Checking Rules](#322-type-checking-rules). Implementation details in [4.1. Type checking](#41-type-checking): rejecting extensions of `Extern` ([4.1.1](#411-extern-cannot-be-extended)), implicit conversions and overload ranking ([4.1.2](#412-implicit-conversions)), dynamic operations ([4.1.3](#413-dynamic-operations)). Shared helpers in [4.3. Helpers](#43-helpers). |
+| `cangjie_compiler` - Sema | (5) Type checking of Extern expressions and annotate Extern expression that need desugaring. Typing rules in section [3.2.2. Type Checking Rules](#322-type-checking-rules). Implementation details in [4.1. Type checking](#41-type-checking): rejecting extensions of `Extern` ([4.1.1](#411-extern-cannot-be-extended)), implicit conversions ([4.1.2](#412-implicit-conversions)), dynamic operations ([4.1.3](#413-dynamic-operations)). Shared helpers in [4.3. Helpers](#43-helpers). |
 | `cangjie_compiler` - Desugar After Sema | (6) Additional pass to desugar annotated Extern expressions. Desugaring rules in section [3.2.3. Desugaring after sema](#323-desugaring-after-sema). Implementation details in [4.2. Desugaring](#42-desugaring): the new `DesugarExtern` pass ([4.2.1](#421-the-pass)), implicit conversions ([4.2.2](#422-implicit-conversions)), dynamic operations and compound assignments ([4.2.3](#423-dynamic-operations)), the generated calls ([4.2.4](#424-the-generated-calls)). Shared helpers in [4.3. Helpers](#43-helpers). Also desugars the `getExtern` and `setExtern` intrinsics into direct reads and writes of the `Extern<T>.payload` field, bypassing the dynamic member-access/update desugaring, see [4.4. Desugaring of `getExtern` and `setExtern`](#44-desugaring-of-getextern-and-setextern). |
+| `cangjie_compiler` - CHIR | (7) Dereference mapped call arguments, needed for compound assignment `x.f op= v` of a field `x.f: Extern<T>`. Details in [Compound assignment of an Extern variable or field](#compound-assignment-of-an-extern-variable-or-field). |
 | `cangjie_tools` | Consequence of (1). Some LSP tests golden files need to be updated because of additional new public declarations in std.core. |
 
 No changes in the compiler backend or any specific OS-specific features.
@@ -326,7 +328,7 @@ When `Extern<T>` is expected in a context that allows implicit conversion (liste
 
 The last two rows apply recursively, e.g. `[[1]]` is accepted as `Array<Array<Extern<T>>>`. Blocks, parenthesized expressions, `if`, `match`, `try` and loops are never converted as a whole: only the values they produce are. So loops, an `if` without `else`, a `try` with resources and a block ending with a declaration, whose type is `Unit`, are type errors as for any other expected type. Other expressions, including literals, lambdas, `spawn` and `synchronized`, are converted as a whole when they are themselves expected to be `Extern<T>`. For `synchronized`, the conversion thus runs after the lock is released.
 
-In overload resolution, a candidate that needs no conversion of its arguments is preferred.
+Implicit conversions play no part in overload resolution: a candidate whose parameter is `Extern<T>` is ranked by the usual most-specific rule, whether or not its argument needs a conversion. So a call is ambiguous when one candidate needs a conversion, another one does not, and neither is more specific.
 
 Examples of well typed expressions and type errors:
 
@@ -376,7 +378,10 @@ match (e) {
 // Overload resolution
 func k(p: Int64) {}
 func k(p: Extern<R>) {}
-k(1)                                              // OK, calls k(p: Int64), which needs no conversion
+k(1)                                              // type error: ambiguous, neither Int64 nor Extern<R> is more specific
+func m(p: Any) {}
+func m(p: Extern<R>) {}
+m(1)                                              // OK, calls m(p: Extern<R>), more specific than Any; 1 will be converted
 ```
 
 ##### Dynamic operations
@@ -664,7 +669,9 @@ describes how that is implemented in `cjc`. The work is split between two stages
 conversions and dynamic operations and gives them their types, without rewriting anything; the desugaring after Sema
 then rewrites the `getExtern` and `setExtern` intrinsics used inside `Extern<T>` into payload field accesses, and the
 new `DesugarExtern` pass rewrites the dynamic operations and implicit conversions in one pass, driven by the final types.
-CHIR and the backend are unchanged.
+The only change in CHIR is the translation of mapped arguments needed by compound assignment (see
+[Compound assignment of an Extern variable or field](#compound-assignment-of-an-extern-variable-or-field)); the backend
+is unchanged.
 
 - [4.1. Type checking](#41-type-checking): the Sema changes.
 - [4.2. Desugaring](#42-desugaring): the new `DesugarExtern` pass and the ASTs it generates.
@@ -701,9 +708,7 @@ So the conversion applies wherever an expression is checked against `Extern<T>`:
 
 ##### Overload ranking
 
-In [TypeCheckCall.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/1144ce745182ce8c382c4c9ffcb519d478c6834e...feature_extern_simple_model#diff-36ccbd7dd55048aa23676a6b9aec5ab136d3d401aa045a885f59e40a15b50e9b):
-
-Candidates that need no conversion are preferred. Among the remaining candidates the usual most-specific rule applies, and an ambiguity is an error.
+Overload resolution is unchanged. A candidate is viable when each argument checks against its parameter type, which for `Extern<T>` accepts any well-typed argument through `Check`. Viable candidates are then ranked by the usual most-specific rule, without considering conversions, and an ambiguity is an error.
 
 #### 4.1.3. Dynamic operations
 
@@ -847,6 +852,8 @@ In `e.a.b(1)`, the call is replaced first, then `e.a.b` and `e.a` become nested 
 ##### Compound assignment of an Extern variable or field
 
 Sema rewrites `lhs op= v`, where `lhs: Extern<T>` is a variable `x` or a field `exp.f` with `exp` of a non-Extern type, into `lhs = lhs'.op(v)`, where the copy `lhs'` is mapped to `lhs` (`DesugarOperatorOverloadExpr`, as for any operator overloading). The pass desugars `lhs'.op(v)` into `T.functionCall(T.memberAccess(lhs', "op"), [v])`, recursively desugaring its operands and keeping the mapping so that the left-hand side is evaluated only once.
+
+This needs a small change in CHIR, in `TranslateTrivialArgWithNoSugar` in [TranslateCallExpr.cpp](https://github.com/CJPLUK/cangjie_compiler/blob/feature_extern_simple_model/src/CHIR/AST2CHIR/TranslateASTNode/TranslateCallExpr.cpp). When `lhs` is a field `exp.f`, the CHIR value mapped to `lhs'` is a reference to the field, but `lhs'` is now an argument of `T.memberAccess` and must be passed by value. A mapped argument is therefore dereferenced with `GetDerefedValue`. For other mapped arguments, such as indices, which are already values, this does nothing. An assertion checks that a mapped argument of reference type points to a class or array, or has type `Extern<T>`.
 
 ##### Compound assignment of a dynamic member or index
 
