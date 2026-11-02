@@ -155,7 +155,7 @@ The yellow boxes change only to support the forced cast, described in [Appendix 
 | `cangjie_runtime` - std.ast | (2) Forced cast only, see [Appendix A.2](#appendix-a2) (out of review scope). |
 | `cangjie_compiler` - Parser | (3) Forced cast only, see [Appendix A.2](#appendix-a2) (out of review scope). |
 | `cangjie_compiler` - Macro Expand | (4) Forced cast only, see [Appendix A.2](#appendix-a2) (out of review scope). |
-| `cangjie_compiler` - Sema | (5) Type checking of Extern expressions and annotate Extern expression that need desugaring. Typing rules in section [3.2.2. Type Checking Rules](#322-type-checking-rules). Implementation details in [4.1. Type checking](#41-type-checking): rejecting extensions of `Extern` ([4.1.1](#411-extern-cannot-be-extended)), implicit conversions ([4.1.2](#412-implicit-conversions)), dynamic operations ([4.1.3](#413-dynamic-operations)). Shared helpers in [4.3. Helpers](#43-helpers). |
+| `cangjie_compiler` - Sema | (5) Type checking of Extern expressions and annotate Extern expression that need desugaring. Typing rules in section [3.2.2. Type Checking Rules](#322-type-checking-rules). Implementation details in [4.1. Type checking](#41-type-checking): rejecting extensions of `Extern` ([4.1.1](#411-extern-cannot-be-extended)), implicit conversions ([4.1.2](#412-implicit-conversions)), dynamic operations ([4.1.3](#413-dynamic-operations)), rejecting implicit conversions and dynamic operations in `const` code ([4.1.4](#414-extern-in-const-code)). Shared helpers in [4.3. Helpers](#43-helpers). |
 | `cangjie_compiler` - Desugar After Sema | (6) Additional pass to desugar annotated Extern expressions. Desugaring rules in section [3.2.3. Desugaring after sema](#323-desugaring-after-sema). Implementation details in [4.2. Desugaring](#42-desugaring): the new `DesugarExtern` pass ([4.2.1](#421-the-pass)), implicit conversions ([4.2.2](#422-implicit-conversions)), dynamic operations and compound assignments ([4.2.3](#423-dynamic-operations)), the generated calls ([4.2.4](#424-the-generated-calls)). Shared helpers in [4.3. Helpers](#43-helpers). Also desugars the `getExtern` and `setExtern` intrinsics into direct reads and writes of the `Extern<T>.payload` field, bypassing the dynamic member-access/update desugaring, see [4.4. Desugaring of `getExtern` and `setExtern`](#44-desugaring-of-getextern-and-setextern). |
 | `cangjie_compiler` - CHIR | (7) Dereference mapped call arguments, needed for compound assignment `x.f op= v` of a field `x.f: Extern<T>`. Details in [Compound assignment of an Extern variable or field](#compound-assignment-of-an-extern-variable-or-field). |
 | `cangjie_tools` | Consequence of (1). Some LSP tests golden files need to be updated because of additional new public declarations in std.core. |
@@ -309,6 +309,19 @@ Both extensions report:
 
 ```bash
 error: extending type 'Struct-Extern<Generics-T>' is not allowed
+```
+
+##### `Extern` in `const` code
+
+Implicit conversions to `Extern<T>` and dynamic operations on `Extern<T>` are desugared into calls to static functions of `T`, which are not `const`. So neither is allowed in `const` code. `const` code is the initializer of a `const` variable, the body of a `const` function or constructor, a member initializer of a type with a `const` constructor, and an annotation argument. Everything else about `Extern<T>` is allowed: `const` code may declare, hold, pass, return and test `Extern<T>` values, e.g. a `const` function with an `Extern<T>` parameter, or `a is Extern<T>`. `Extern<T>` has no `const` constructor, so `Extern<T>(v)` is rejected by the usual rule that only `const` functions can be called.
+
+Examples:
+
+```cangjie
+const x: Extern<R> = 1                                 // error: implicit conversion to 'Extern' is not allowed in 'const' code
+const func f(e: Extern<R>): Extern<R> { e.foo }        // error: dynamic operation on 'Extern' is not allowed in 'const' code
+const func g(): Int64 { let t: (Extern<R>, Int64) = (1, 2); 0 } // error: implicit conversion ... (the element 1)
+const func h(b: Bool, e: Extern<R>): (Extern<R>, Int64) { (if (b) { e } else { e }, 1) } // OK
 ```
 
 ##### Implicit conversion
@@ -761,6 +774,29 @@ No other change is needed for:
 - **`++` and `--`,** which stay errors: they need an integer type.
 - **A multiple assignment `(e.x, b) = (1, 2)`,** which becomes one dynamic update per element.
 
+One change is needed for the **pipeline `x |> e`**, which is desugared during type checking into `e(x)`. `TryDesugarFunctionCallExpr` in [DesugarInTypeCheck.cpp](https://github.com/CJPLUK/cangjie_compiler/blob/feature_extern_simple_model/src/Sema/Desugar/DesugarInTypeCheck.cpp) rewrites a callee that is not a function into `e.()`, the operator `()`. It leaves an `Extern<T>` value (`IsExternValue`, section 4.3) unchanged, so `x |> e` is the dynamic call `e(x)` rather than a call of the dynamic member access `e.()`. The composition `f ~> e` uses the same function and stays an error, as `e` is not a function.
+
+#### 4.1.4. `Extern` in `const` code
+
+`CheckConstEvaluation` runs among the checks after Sema, before `DesugarExtern` inserts the `toExtern` calls and the runtime calls, so it cannot see them. Instead, `ConstEvaluationChecker` in [ConstEvaluationChecker.cpp](https://github.com/CJPLUK/cangjie_compiler/blob/feature_extern_simple_model/src/Sema/ConstEvaluationChecker.cpp) finds the nodes that `DesugarExtern` will rewrite, using the same tests on the typed AST:
+
+- **Dynamic operations.** `ChkExpr` reports `sema_extern_operation_in_const` and fails, before the usual check, when `IsDynamicExternOperation` (section 4.3) holds, the test that `DesugarExtern` also uses to find the operations it rewrites. `ChkDesugarExpr` checks a call that is the `desugarExpr` of another node without going through `ChkExpr`, so it makes the same check, e.g. for `x |> e`, desugared into the dynamic call `e(x)` (section 4.1.3). The operands are not checked, so each operation is reported once.
+- **Implicit conversions.** A converted value keeps its own type, so a conversion is found by comparing a value with the type expected for it. `ChkNoExternConversion(value, expected)` reports `sema_extern_conversion_in_const` when `TypeCheckerImpl::NeedExternConversion` holds, the test that `DesugarExtern` also uses: `expected` is `Extern<T>` and the type of `value` is not a subtype of it. So `Extern<A>` used where `Extern<B>` is expected is a conversion. `CheckConstEvaluation` passes the test to `ConstEvaluationChecker` as a function, like `DesugarExtern` does for `ExternDesugaring`. Its overload for a `Block` compares its last expression, or `Unit` when the block is empty or ends with a declaration. It is called after the usual check of the value, at the places where `DesugarExtern` converts (section 4.2.2):
+
+| Value | Expected type | In |
+|---|---|---|
+| Initializer of a variable, including a member variable of a type with a `const` constructor | declared type | `ChkVarDeclAbstract`, `ChkDeclHasConstAllConstInitializers` |
+| Assigned value, e.g. `this.e = 1` in a `const` constructor (not compound assignments) | type of the left value | `ChkAssignExpr` |
+| Call argument, in `desugarArgs` order when present | parameter type | `ChkCallExpr` |
+| Default value of a parameter of a `const` function | parameter type | `ChkFuncBody`; the generated default function is marked `const` only if this check passes |
+| `return` value | return type of the function, except constructors | `ChkReturnExpr` |
+| Function or lambda body | return type, except constructors | `ChkFuncBody` |
+| Tuple literal element | element type | `ChkTupleLit`, which replaces `ChkChildren` for `TupleLit` |
+| Right operand of `a ?? b`, which `TryDesugarForCoalescing` turns into a `match` branch after this check | type of the expression | `ChkBinaryExpr` |
+| `if` branches, `match` cases, `try` and `catch` blocks | type of the expression | `ChkIfExpr`, `ChkMatchExpr`, `ChkTryExpr` |
+
+`Array` literals and `Array(n, item: v)` are not checked, as they are already not `const`. `ExternDesugaring` does not convert `VArray` literals.
+
 ### 4.2. Desugaring
 
 #### 4.2.1. The pass
@@ -932,6 +968,9 @@ Operands retain their own types, even where the parameter is `Any`. Passing them
   // ae assigns to a member or to an index of an Extern<T> value e:
   // e.f = v, e[i] = v, e.f op= v, e[i] op= v
   bool IsDynamicExternUpdate(const AssignExpr& ae);
+
+  // expr is one of the above and has no desugarExpr yet; used by DesugarExtern and the const checker
+  bool IsDynamicExternOperation(const Expr& expr);
   ```
 
 ### 4.4. Desugaring of `getExtern` and `setExtern`
