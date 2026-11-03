@@ -683,9 +683,7 @@ else:
     check as before
 ```
 
-So the conversion applies wherever an expression is checked against `Extern<T>`: variable initializers, assignments, call arguments, `return`, function and lambda bodies, and default parameter values.
-
-`IsControlFlowExpr(node)` (file-local in `TypeChecker.cpp`) is true for `if`, `match`, `try`, blocks, parenthesized expressions, and loops (`Node::IsLoopExpr`). These are checked as usual. For `if`, `match`, `try`, blocks, and parenthesized expressions, the target `Extern<T>` is passed to the expressions that produce their values, so conversion applies to those values rather than to the whole node. Loops check their type `Unit` against the target as usual. `synchronized` is not included, so that it is converted as a whole and the conversion runs after the lock is released. A value of type `Unit` that doesn't come from a branch is therefore an error, as it is for any other target: a loop, an `if` without `else`, and a `try` with resources.
+`IsControlFlowExpr(node)` is true for `if`, `match`, `try`, blocks, parenthesized expressions, and loops. These are checked as usual. For `if`, `match`, `try`, blocks, and parenthesized expressions, the target `Extern<T>` is passed to the expressions that produce their values, so conversion applies to those values rather than to the whole node. Loops check their type `Unit` against the target as usual. `synchronized` is not included, so that it is converted as a whole and the conversion runs after the lock is released. A value of type `Unit` that doesn't come from a branch is therefore an error, as it is for any other target: a loop, an `if` without `else`, and a `try` with resources.
 
 ##### Overload ranking
 
@@ -693,7 +691,7 @@ Overload resolution is unchanged. A candidate is viable when each argument check
 
 #### 4.1.3. Dynamic operations
 
-A dynamic read or call is typed `Extern<T>`, the type of its receiver. A dynamic update, including compound assignment, is typed `Unit`.
+A dynamic field access, index access, or call is typed `Extern<T>`, the type of its receiver. A dynamic field or index update, including compound assignment, is typed `Unit`.
 
 | Source | Where | Rule |
 |---|---|---|
@@ -738,8 +736,7 @@ SynAssignExpr(ae):                         // ae is a dynamic member/index updat
 When one of these nodes is checked against an expected type, its result type must be compatible with that type, subject to the implicit-conversion rules above.
 
 No other change is needed for:
-- **Operators.** `e1 + e2` and `-e` are already rewritten into `e1.+(e2)` and `e.-()`, which are dynamic calls of type `Extern<T>`. So `if (e1 < e2)` is an error: the condition is not `Bool`.
-- **`++` and `--`,** which stay errors: they need an integer type.
+- **Operators.** `e1 + e2` and `-e` are already rewritten into `e1.+(e2)` and `e.-()`, which are dynamic calls of type `Extern<T>`. Comparisons too: `e1 < e2` and `e1 == e2` become `e1.<(e2)` and `e1.==(e2)`, of type `Extern<T>`, so they cannot be the condition of an `if`: they are not `Bool`.
 - **A multiple assignment `(e.x, b) = (1, 2)`,** which becomes one dynamic update per element.
 
 One change is needed for the **pipeline `x |> e`**, which is desugared during type checking into `e(x)`. `TryDesugarFunctionCallExpr` in [DesugarInTypeCheck.cpp](https://github.com/CJPLUK/cangjie_compiler/blob/feature_extern_simple_model/src/Sema/Desugar/DesugarInTypeCheck.cpp) rewrites a callee that is not a function into `e.()`, the operator `()`. It leaves an `Extern<T>` value (`IsExternValue`, section 4.3) unchanged, so `x |> e` is the dynamic call `e(x)` rather than a call of the dynamic member access `e.()`. The composition `f ~> e` uses the same function and stays an error, as `e` is not a function.
@@ -749,7 +746,7 @@ One change is needed for the **pipeline `x |> e`**, which is desugared during ty
 `CheckConstEvaluation` runs among the checks after Sema, before `DesugarExtern` inserts the `toExtern` calls and the runtime calls, so it cannot see them. Instead, `ConstEvaluationChecker` in [ConstEvaluationChecker.cpp](https://github.com/CJPLUK/cangjie_compiler/blob/feature_extern_simple_model/src/Sema/ConstEvaluationChecker.cpp) finds the nodes that `DesugarExtern` will rewrite, using the same tests on the typed AST:
 
 - **Dynamic operations.** `ChkExpr` reports `sema_extern_operation_in_const` and fails, before the usual check, when `IsDynamicExternOperation` (section 4.3) holds, the test that `DesugarExtern` also uses to find the operations it rewrites. `ChkDesugarExpr` checks a call that is the `desugarExpr` of another node without going through `ChkExpr`, so it makes the same check, e.g. for `x |> e`, desugared into the dynamic call `e(x)` (section 4.1.3). The operands are not checked, so each operation is reported once.
-- **Implicit conversions.** A converted value keeps its own type, so a conversion is found by comparing a value with the type expected for it. `ChkNoExternConversion(value, expected)` reports `sema_extern_conversion_in_const` when `TypeCheckerImpl::NeedExternConversion` holds, the test that `DesugarExtern` also uses: `expected` is `Extern<T>` and the type of `value` is not a subtype of it. So `Extern<A>` used where `Extern<B>` is expected is a conversion. `CheckConstEvaluation` passes the test to `ConstEvaluationChecker` as a function, like `DesugarExtern` does for `ExternDesugaring`. Its overload for a `Block` compares its last expression, or `Unit` when the block is empty or ends with a declaration. It is called after the usual check of the value, at the places where `DesugarExtern` converts (section 4.2.2):
+- **Implicit conversions.** A converted value keeps its own type, so a conversion is found by comparing a value with the type expected for it. `ChkNoExternConversion(value, expected)` reports `sema_extern_conversion_in_const` when `NeedExternConversion` (section 4.3) holds, the test that `DesugarExtern` also uses: `expected` is `Extern<T>` and the type of `value` is not a subtype of it. So `Extern<A>` used where `Extern<B>` is expected is a conversion. `ConstEvaluationChecker`, like `ExternDesugaring`, holds the `TypeManager` that the test needs. Its overload for a `Block` compares its last expression, or `Unit` when the block is empty or ends with a declaration. It is called after the usual check of the value, at the places where `DesugarExtern` converts (section 4.2.2):
 
 | Value | Expected type | In |
 |---|---|---|
@@ -893,10 +890,12 @@ Each dynamic operation produces a call to a static method `M` of runtime `T`:
 
 ```text
 CallExpr [CALL_DECLARED_FUNCTION, resolvedFunction = M, ty = result type of M]
-├─ MemberAccess M [target = M, ty = the type of M with T substituted]
+├─ MemberAccess M [target = M, ty = the type of M as a member of T]
 │  └─ RefExpr T [ty = T]
 └─ FuncArg [ty = type of the argument] x one per parameter of M
 ```
+
+`M` is the implementation of the `ForeignRuntime<T>` function in `T`, possibly inherited. Its type as a member of `T` also substitutes the type parameters of a generic class it is inherited from. For example, `memberAccess(e: E, name: String): E` inherited by `RT <: AccessBase<Extern<RT>>` has type `(Extern<RT>, String) -> Extern<RT>`.
 
 The arguments and result type of each call:
 
@@ -914,10 +913,10 @@ Operands retain their own types, even where the parameter is `Any`. Passing them
 
 - `Ty::IsCoreExternType()` in [Types.h](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_include/cangjie/AST/Types.h) / [Types.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/AST/Types.cpp): a struct of the core package named `Extern` with one type argument. It uses the new constants `STD_LIB_EXTERN` and `STD_LIB_FOREIGN_RUNTIME` from [ConstantsUtils.h](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_include/cangjie/Utils/ConstantsUtils.h).
 
-- `NeedExternConversion(from, to)` in [TypeCheckerImpl.h](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/TypeCheckerImpl.h) / [TypeChecker.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/TypeChecker.cpp), shared by Sema and the desugaring:
+- `NeedExternConversion(typeManager, from, to)` in [TypeCheckUtil.h](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/TypeCheckUtil.h) / [TypeCheckUtil.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/TypeCheckUtil.cpp), shared by the const checker and the desugaring:
   ```cpp
-  // `to` is `Extern<T>`, `from` is a valid type, not `Nothing`, and not the same as `to`
-  bool NeedExternConversion(Ty& from, Ty& to);
+  // `to` is `Extern<T>`, `from` is a valid type, not `Nothing`, and not a subtype of `to`
+  bool NeedExternConversion(TypeManager& typeManager, Ty& from, Ty& to);
   ```
 - Dynamic-node predicates in [TypeCheckUtil.h](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/TypeCheckUtil.h) / [TypeCheckUtil.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/TypeCheckUtil.cpp), shared by Sema and the desugaring:
   ```cpp
