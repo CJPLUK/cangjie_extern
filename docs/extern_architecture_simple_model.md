@@ -848,6 +848,7 @@ class C {
     operator func [](index: Extern<RT>): Int64 { ... }
     operator func [](index: Extern<RT>, value!: Int64): Unit { ... }
 }
+func next(): Int64 { ... }
 
 c[next()] += 1   // c.[](RT.toExtern(next()), value: c.[](RT.toExtern(next()')).+(1))
                  // next() runs once, RT.toExtern twice
