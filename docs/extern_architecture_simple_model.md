@@ -42,7 +42,7 @@ func testCJ(vm: Extern<T>): Unit where T <: ForeignRuntime<T> {
 }
 ```
 
-The shorthand `(Float64)calculator.add(2, 3.5)` for the explicit `fromExtern` call is described in [Appendix A](#appendix-a) (out of review scope).
+The syntactic sugar for `T.fromExtern<...>(...)` has not yet been decided and is outside the scope of this architecture. [Appendix A](#appendix-a) includes the initial forced-cast proposal, and [casts.md](https://github.com/CJPLUK/proposals/blob/main/casts.md) has a generic cast proposal to be discussed as a separate proposal.
 
 ### Design philosophy
 
@@ -80,30 +80,23 @@ flowchart TB
 
     subgraph Compiler["Cangjie Compiler (cjc)"]
         LoadPlugin["Load Plugins"]
-        Parser["Parser (3)<br/><br/><p style='text-align:left'>Support for parsing (U)e as ForcedCastExpr</p>"]
+        Parser["Parser"]
         ConditionCompile["Condition Compile"]
         ImportPackage["Import Package"]
-        MacroExpand["Macro Expand (4)<br/><br/><p style='text-align:left'>add support for forced cast</p>"]
+        MacroExpand["Macro Expand"]
         ASTDiff["AST Diff"]
-        Sema["Sema (5)<br/><br/><p style='text-align:left'>type checking of Extern expressions</p>"]
-        DesugarAfterSema["DesugarAfterSema (6)<br/><br/><p style='text-align:left'>set .desugarExpr field with desugared Extern expr<br/>getExtern / setExtern intrinsics</p>"]
+        Sema["Sema (2)<br/><br/><p style='text-align:left'>type checking of Extern expressions</p>"]
+        DesugarAfterSema["DesugarAfterSema (3)<br/><br/><p style='text-align:left'>set .desugarExpr field with desugared Extern expr<br/>getExtern / setExtern intrinsics</p>"]
         GenericInstantiation["Generic Instantiation"]
         OverflowStrategy["Overflow Strategy"]
         Mangling["Mangling"]
         SaveCJO["Save CJO"]
-        CHIR["CHIR (7)<br/><br/><p style='text-align:left'>dereference mapped arguments of compound assignment</p>"]
+        CHIR["CHIR (4)<br/><br/><p style='text-align:left'>dereference mapped arguments of compound assignment</p>"]
         CodeGen["Code Generation"]
         SaveResults["Save Results"]
-        style Parser fill:#ffe066
-        style MacroExpand fill:#ffe066
         style DesugarAfterSema fill:#fa7c5c
         style CHIR fill:#fa7c5c
         style Sema fill:#fa7c5c
-    end
-
-    subgraph StdAST["std.ast (2)"]
-        ForcedCastExpr["ForcedCastExpr<br/>class"]
-        style ForcedCastExpr fill:#ffe066
     end
 
     subgraph StdCore["std.core (1)"]
@@ -127,8 +120,6 @@ flowchart TB
         style PyVM fill: #fcfafa
     end
 
-    UserCode -.-> |"possibly imports"| StdAST
-    StdAST ~~~ StdCore
     UC --> Compiler
     LoadPlugin --> Parser --> ConditionCompile --> ImportPackage --> MacroExpand
     MacroExpand --> ASTDiff --> Sema --> DesugarAfterSema --> GenericInstantiation
@@ -145,20 +136,15 @@ flowchart TB
     style Compiler fill:#c1e1e3
 ```
 
-The yellow boxes change only to support the forced cast, described in [Appendix A](#appendix-a) (out of review scope).
-
 ### Changes 
 
 | Component | Role |
 | --- | --- |
-| `cangjie_runtime` - std.core | (1) New file [`extern_runtime.cj`](https://github.com/CJPLUK/cangjie_runtime/compare/469f9ebc73959d3eb8d2b79b424aeceaf492bb94...feature_extern_simple_model#diff-515353015ae80d6a51e0732df3b0e55484e5d9beb4708440b17be668f06d370e) in `std.core` with `Extern<T>` struct, `ForeignRuntime<T>` interface, new exceptions, and documentation about new public declarations. |
-| `cangjie_runtime` - std.ast | (2) Forced cast only, see [Appendix A.2](#appendix-a2) (out of review scope). |
-| `cangjie_compiler` - Parser | (3) Forced cast only, see [Appendix A.2](#appendix-a2) (out of review scope). |
-| `cangjie_compiler` - Macro Expand | (4) Forced cast only, see [Appendix A.2](#appendix-a2) (out of review scope). |
-| `cangjie_compiler` - Sema | (5) Type checking of Extern expressions and annotate Extern expression that need desugaring. Typing rules in section [3.2.2. Type Checking Rules](#322-type-checking-rules). Implementation details in [4.1. Type checking](#41-type-checking): rejecting extensions of `Extern` ([4.1.1](#411-extern-cannot-be-extended)), implicit conversions ([4.1.2](#412-implicit-conversions)), dynamic operations ([4.1.3](#413-dynamic-operations)), rejecting implicit conversions and dynamic operations in `const` code ([4.1.4](#414-extern-in-const-code)). Shared helpers in [4.3. Helpers](#43-helpers). |
-| `cangjie_compiler` - Desugar After Sema | (6) Additional pass to desugar annotated Extern expressions. Desugaring rules in section [3.2.3. Desugaring after sema](#323-desugaring-after-sema). Implementation details in [4.2. Desugaring](#42-desugaring): the new `DesugarExtern` pass ([4.2.1](#421-the-pass)), implicit conversions ([4.2.2](#422-implicit-conversions)), dynamic operations and compound assignments ([4.2.3](#423-dynamic-operations)), the generated calls ([4.2.4](#424-the-generated-calls)). Shared helpers in [4.3. Helpers](#43-helpers). Also desugars the `getExtern` and `setExtern` intrinsics into direct reads and writes of the `Extern<T>.payload` field, bypassing the dynamic member-access/update desugaring, see [4.4. Desugaring of `getExtern` and `setExtern`](#44-desugaring-of-getextern-and-setextern). |
-| `cangjie_compiler` - CHIR | (7) Dereference mapped call arguments, needed for compound assignment `x.f op= v` of a field `x.f: Extern<T>`. Details in [Compound assignment of an Extern variable or field](#compound-assignment-of-an-extern-variable-or-field). |
-| `cangjie_tools` | Consequence of (1). Some LSP tests golden files need to be updated because of additional new public declarations in std.core. |
+| `cangjie_runtime` - std.core | (1) New file [`extern_runtime.cj`](https://github.com/CJPLUK/cangjie_runtime/compare/469f9ebc73959d3eb8d2b79b424aeceaf492bb94...feature_extern_simple_model#diff-515353015ae80d6a51e0732df3b0e55484e5d9beb4708440b17be668f06d370e) in `std.core` with `Extern<T>` struct, `ForeignRuntime<T>` interface, new exceptions, and documentation about new public declarations. Details in section [3.1. Standard library (`std.core`)](#31-standard-library-stdcore): [`Extern<T>` struct](#externt-struct), [`ForeignRuntime<T>` interface](#foreignruntimet-interface), [exceptions](#exception-hierarchy-all-in-stdcore). |
+| `cangjie_compiler` - Sema | (2) Type checking of Extern expressions and annotate Extern expression that need desugaring. Typing rules in section [3.2.1. Type Checking Rules](#321-type-checking-rules). Implementation details in [4.1. Type checking](#41-type-checking). |
+| `cangjie_compiler` - Desugar After Sema | (3) Additional pass to desugar annotated Extern expressions. Desugaring rules in section [3.2.2. Desugaring after sema](#322-desugaring-after-sema). Implementation details in [4.2. Desugaring](#42-desugaring). |
+| `cangjie_compiler` - CHIR | (4) Dereference mapped call arguments, needed for compound assignment `x.f op= v` of a field `x.f: Extern<T>`. Details in [Compound assignment of an Extern variable or field](#compound-assignment-of-an-extern-variable-or-field). |
+| `cangjie_tools` | Consequence of (1). Some LSP tests golden files need to be updated because of additional new public declarations in std.core. See golden files diffs in [GitCode PR](https://gitcode.com/Cangjie/cangjie_tools/pull/1355/diffs). |
 
 No changes in the compiler backend or any specific OS-specific features.
 
@@ -187,7 +173,7 @@ The compiler desugars Extern typed expressions directly into calls to `ForeignRu
 
 Section 3.1 introduces the changes to standard library core, and Section 3.2 introduces the changes required in the compiler.
 
-### 3.1 Standard library (`std.core`)
+### 3.1 Standard library (`std.core`) <span id="31-standard-library-stdcore"></span>
 
 We introduce a **new file**: `stdlib/libs/std/core/extern_runtime.cj` containing the following definitions.
 
@@ -216,7 +202,7 @@ The property `Extern<T>.getPayload(Extern<T>(v)) = v` holds for any value `v: An
 
 The default payload makes `this` fully initialized before the constructor body runs. After Sema, the compiler desugars `getExtern` and `setExtern` into direct field reads and writes.
 
-#### `ForeignRuntime<T>` interface
+#### `ForeignRuntime<T>` interface <span id="foreignruntimet-interface"></span>
 
 ```cangjie
 public interface ForeignRuntime<T> where T <: ForeignRuntime<T> {
@@ -266,7 +252,7 @@ public interface ForeignRuntime<T> where T <: ForeignRuntime<T> {
 
 These functions must throw `ForeignRuntimeException` if execution in the external runtime throws an exception.
 
-Example:
+**Example**: The class below is a simple example to demonstrate a Foreign Runtime that type checks. Every required function is declared with its signature, as in the `ForeignRuntime<T>` interface, and the body of each function simply throws rather than interacting with an external runtime.
 
 ```cangjie
 public class MockRT <: ForeignRuntime<MockRT> {
@@ -283,12 +269,7 @@ public class MockRT <: ForeignRuntime<MockRT> {
 ### 3.2 Compiler changes
 
 
-#### 3.2.1 Parsing <span id="parsing"></span>
-
-The features under review need no parser changes. The forced cast `(U)e` needs a new AST node, described in
-[Appendix A.3](#appendix-a3) (out of review scope).
-
-#### 3.2.2 Type checking rules
+#### 3.2.1 Type checking rules
 
 The type checking rules for the forced cast are described in [Appendix A.4](#appendix-a4) (out of review scope).
 
@@ -433,7 +414,7 @@ e.f(p: 1)                // type error: named arguments are rejected
 e.f(inout x)             // type error: inout arguments are rejected
 ```
 
-#### 3.2.3 Desugaring after SEMA
+#### 3.2.2 Desugaring after SEMA
 
 The desugaring of the forced cast is described in [Appendix A.5](#appendix-a5) (out of review scope).
 
@@ -513,7 +494,7 @@ DESUGAR(exp) ~> // otherwise, preserve structure and desugar subexpressions
 
 For non-`Extern` Cangjie expressions, `MAP(DESUGAR, exp)` preserves the outer expression and desugars its subexpressions..
 
-The compound-assignment rules are discussed in detail in [Section 3.2.4, Compound Assignment](#compound-assignment). Here `"op"` denotes the operator name without `=` (e.g. `"+"` for `+=`), and the temporaries are fresh names.
+The compound-assignment rules are discussed in detail in [Section 3.2.3, Compound Assignment](#compound-assignment). Here `"op"` denotes the operator name without `=` (e.g. `"+"` for `+=`), and the temporaries are fresh names.
 
 The generated calls follow standard Cangjie evaluation order. Compound-assignment expansions use temporaries so that the receiver and index are evaluated only once.
 
@@ -611,7 +592,7 @@ DESUGAR(foo().f *= 2) ~>
     foo().f = T.functionCall(T.memberAccess(foo`.f, "*"), [2])   // foo() is evaluated once, foo` is a reference for foo()
 ```
 
-#### 3.2.4 Other forms of assignment
+#### 3.2.3 Other forms of assignment
 
 ##### Multiple Assignment Expression <span id="multiple-assignment-expression"></span>
 
@@ -1108,7 +1089,7 @@ Examples, with `e: Extern<R>` and `f` a function:
 
 ### A.5. Desugaring <span id="appendix-a5"></span>
 
-At the desugaring stage the remaining operations `(U)e` are not ambiguous anymore and can be desugared as `T.fromExtern<U>(DESUGAR(e))`, for `e: Extern<T>` and `T <: ForeignRuntime<T>`. Note that expressions `e` needs to be desugared, e.g. it can be of the form `e1.foo`. This adds one rule to the `DESUGAR` function of [section 3.2.3](#323-desugaring-after-sema):
+At the desugaring stage the remaining operations `(U)e` are not ambiguous anymore and can be desugared as `T.fromExtern<U>(DESUGAR(e))`, for `e: Extern<T>` and `T <: ForeignRuntime<T>`. Note that expressions `e` needs to be desugared, e.g. it can be of the form `e1.foo`. This adds one rule to the `DESUGAR` function of [section 3.2.2](#322-desugaring-after-sema):
 
 ```cangjie
 DESUGAR((U)exp) ~>
