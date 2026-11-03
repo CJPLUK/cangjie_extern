@@ -644,20 +644,22 @@ The same expansions apply to other compound operators, using the operator name w
 ## 4. Detailed Implementation Plan
 
 Section 3 defined which `Extern` expressions the compiler accepts and what they are rewritten into. This section
-describes how that is implemented in `cjc`. The work is split between two stages: Sema only accepts the implicit
+describes how that is implemented in `cjc`.
+
+The work is split between two stages: Sema only accepts the implicit
 conversions and dynamic operations and gives them their types, without rewriting anything; the desugaring after Sema
 then rewrites the `getExtern` and `setExtern` intrinsics used inside `Extern<T>` into payload field accesses, and the
 new `DesugarExtern` pass rewrites the dynamic operations and implicit conversions in one pass, driven by the final types.
+
 The only change in CHIR is the translation of mapped arguments needed by compound assignment (see
 [Compound assignment of an Extern variable or field](#compound-assignment-of-an-extern-variable-or-field)); the backend
 is unchanged.
 
+The section is organized as follows:
 - [4.1. Type checking](#41-type-checking): the Sema changes.
 - [4.2. Desugaring](#42-desugaring): the new `DesugarExtern` pass and the ASTs it generates.
 - [4.3. Helpers](#43-helpers): functions shared by Sema and `DesugarExtern`.
 - [4.4. Desugaring of `getExtern` and `setExtern`](#44-desugaring-of-getextern-and-setextern): how the intrinsic functions `getExtern(e)` and `setExtern(e, v)` are desugared into accesses of the payload field.
-
-The implementation of the forced cast is described in [Appendix A.5](#appendix-a5) (out of review scope).
 
 ### 4.1. Type checking
 
@@ -665,13 +667,13 @@ The implementation of the forced cast is described in [Appendix A.5](#appendix-a
 
 Extending `Extern` should result in a type error.
 
-`CheckExtendedTypeValidity` in [TypeCheckExtend.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/1144ce745182ce8c382c4c9ffcb519d478c6834e...feature_extern_simple_model#diff-6f0fdcb019a9c84eec322123375088e33baaf881deddc63a69a0412dfa74266a) should report `sema_illegal_extended_type` for `extend Extern<T>`, including through a type alias.
+`CheckExtendedTypeValidity` in [TypeCheckExtend.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/TypeCheckExtend.cpp) should report `sema_illegal_extended_type` for `extend Extern<T>`, including through a type alias.
 
 #### 4.1.2. Implicit conversions
 
 ##### Conversion in `Check`
 
-Function `Check` in [`src/Sema/TypeChecker.cpp`](https://github.com/CJPLUK/cangjie_compiler/compare/1144ce745182ce8c382c4c9ffcb519d478c6834e...feature_extern_simple_model#diff-82ac4d96ac0e1970552e95b7d95d2a768441f87b06ac3fdfbff63a80f7b3d258) accepts an expression of any type when the target is `Extern<T>`:
+Function `Check` in [`src/Sema/TypeChecker.cpp`](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/TypeChecker.cpp) accepts an expression of any type when the target is `Extern<T>`:
 
 ```text
 if target is Extern<T> and node is an Expr and !IsControlFlowExpr(node):
@@ -695,10 +697,10 @@ A dynamic read or call is typed `Extern<T>`, the type of its receiver. A dynamic
 
 | Source | Where | Rule |
 |---|---|---|
-| `e.f` | `InferMemberAccess` in [NameReferenceExpr.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/1144ce745182ce8c382c4c9ffcb519d478c6834e...feature_extern_simple_model#diff-68404baccb39294994d0a12c925dc7850b44ecd820c33cea5d8b0fb7e4b7a338) | if `e: Extern<T>` then `ty = Extern<T>` |
-| `e[idx]` | `ChkSubscriptExpr` in [SubscriptExpr.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/1144ce745182ce8c382c4c9ffcb519d478c6834e...feature_extern_simple_model#diff-eef0bc9ab04cd78288c9c07c822f27d053e14fe59a00057179d43847b31cd8ee)  |  if `e: Extern<T>` then `ty = Extern<T>`, `idx` has any valid type |
-| `e(args)`, `e.f(args)` | `ChkCallExpr` in [TypeCheckCall.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/1144ce745182ce8c382c4c9ffcb519d478c6834e...feature_extern_simple_model#diff-36ccbd7dd55048aa23676a6b9aec5ab136d3d401aa045a885f59e40a15b50e9b), before candidate lookup | if `e: Extern<T>`/`e.f : Extern<T>` then `ty = Extern<T>`; arguments of any type; named and `inout` arguments are errors |
-| `e.f = v`, `e[idx] = v`, `e.f op= v`, `e[idx] op= v` | `SynAssignExpr` in [AssignExpr.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/1144ce745182ce8c382c4c9ffcb519d478c6834e...feature_extern_simple_model#diff-5ae1203f7e609f777aa6cc264f4cf36c822a8307bb3f79c63930ccad3a9fe4e3), before operator overloading | if `e : Extern<T>` then `ty = Unit`; the left value has type `Extern<T>`; `v`, `idx` of any type |
+| `e.f` | `InferMemberAccess` in [NameReferenceExpr.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/TypeCheckExpr/NameReferenceExpr.cpp) | if `e: Extern<T>` then `ty = Extern<T>` |
+| `e[idx]` | `ChkSubscriptExpr` in [SubscriptExpr.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/TypeCheckExpr/SubscriptExpr.cpp)  |  if `e: Extern<T>` then `ty = Extern<T>`, `idx` has any valid type |
+| `e(args)`, `e.f(args)` | `ChkCallExpr` in [TypeCheckCall.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/TypeCheckCall.cpp), before candidate lookup | if `e: Extern<T>`/`e.f : Extern<T>` then `ty = Extern<T>`; arguments of any type; named and `inout` arguments are errors |
+| `e.f = v`, `e[idx] = v`, `e.f op= v`, `e[idx] op= v` | `SynAssignExpr` in [AssignExpr.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/TypeCheckExpr/AssignExpr.cpp), before operator overloading | if `e : Extern<T>` then `ty = Unit`; the left value has type `Extern<T>`; `v`, `idx` of any type |
 
 The changes to these functions in pseudocode:
 
@@ -767,13 +769,13 @@ One change is needed for the **pipeline `x |> e`**, which is desugared during ty
 
 #### 4.2.1. The pass
 
-New file [ExternDesugaring.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/1144ce745182ce8c382c4c9ffcb519d478c6834e...feature_extern_simple_model#diff-3971c90c7bf1422c4c5fb1fb2ef67a1ddbb0c276a6a0872958f5923f7f07b33f):
+New file [ExternDesugaring.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/Desugar/AfterTypeCheck/ExternDesugaring.cpp):
 
 ```cpp
 void TypeCheckerImpl::DesugarExtern(ASTContext& ctx, Package& pkg);
 ```
 
-It is called in `PerformDesugarAfterSema` in [AfterTypeCheck.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/1144ce745182ce8c382c4c9ffcb519d478c6834e...feature_extern_simple_model#diff-f2caf9a20bfc8c2ab407f0ad580b899b143d43cab385b034b049658a9d4ca58a):
+It is called in `PerformDesugarAfterSema` in [AfterTypeCheck.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/Desugar/AfterTypeCheck.cpp):
 
 ```cpp
 for (auto& pkg : pkgs) {
@@ -910,14 +912,14 @@ Operands retain their own types, even where the parameter is `Any`. Passing them
 
 ### 4.3. Helpers
 
-- `Ty::IsCoreExternType()` in [Types.h](https://github.com/CJPLUK/cangjie_compiler/compare/1144ce745182ce8c382c4c9ffcb519d478c6834e...feature_extern_simple_model#diff-3b8d62be89ea010deabfa27a2963b2eb9195449fd5a32af7d011b8d811dfacb9) / [Types.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/1144ce745182ce8c382c4c9ffcb519d478c6834e...feature_extern_simple_model#diff-669d698eb4a81aeb7ba1facd78340406f469343c213f9cd1bc1dfe9d81d54cc0): a struct of the core package named `Extern` with one type argument. It uses the new constants `STD_LIB_EXTERN` and `STD_LIB_FOREIGN_RUNTIME` from [ConstantsUtils.h](https://github.com/CJPLUK/cangjie_compiler/compare/1144ce745182ce8c382c4c9ffcb519d478c6834e...feature_extern_simple_model#diff-1dd21a2c4e972bc02b089d934e8abaf6258281e9146ffcbf3ec6cca3c5d25d85).
+- `Ty::IsCoreExternType()` in [Types.h](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_include/cangjie/AST/Types.h) / [Types.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/AST/Types.cpp): a struct of the core package named `Extern` with one type argument. It uses the new constants `STD_LIB_EXTERN` and `STD_LIB_FOREIGN_RUNTIME` from [ConstantsUtils.h](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_include/cangjie/Utils/ConstantsUtils.h).
 
-- `NeedExternConversion(from, to)` in [TypeCheckerImpl.h](https://github.com/CJPLUK/cangjie_compiler/compare/1144ce745182ce8c382c4c9ffcb519d478c6834e...feature_extern_simple_model#diff-5480a3f19492392ecda43d2cc60b2ababa30f16c4b7c70d23670a4c7a45cc1bc) / [TypeChecker.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/1144ce745182ce8c382c4c9ffcb519d478c6834e...feature_extern_simple_model#diff-82ac4d96ac0e1970552e95b7d95d2a768441f87b06ac3fdfbff63a80f7b3d258), shared by Sema and the desugaring:
+- `NeedExternConversion(from, to)` in [TypeCheckerImpl.h](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/TypeCheckerImpl.h) / [TypeChecker.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/TypeChecker.cpp), shared by Sema and the desugaring:
   ```cpp
   // `to` is `Extern<T>`, `from` is a valid type, not `Nothing`, and not the same as `to`
   bool NeedExternConversion(Ty& from, Ty& to);
   ```
-- Dynamic-node predicates in [TypeCheckUtil.h](https://github.com/CJPLUK/cangjie_compiler/compare/1144ce745182ce8c382c4c9ffcb519d478c6834e...feature_extern_simple_model#diff-4863ec66d1d7b07c5185cd4285a265ffe2773f6dd5d8ddb6b49dc8bd94cd6385) / [TypeCheckUtil.cpp](https://github.com/CJPLUK/cangjie_compiler/compare/1144ce745182ce8c382c4c9ffcb519d478c6834e...feature_extern_simple_model#diff-d2d99371d589d2068ddf92784b2b3a3e5db6df68c68fab7d68c804e9ad67f152), shared by Sema and the desugaring:
+- Dynamic-node predicates in [TypeCheckUtil.h](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/TypeCheckUtil.h) / [TypeCheckUtil.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/TypeCheckUtil.cpp), shared by Sema and the desugaring:
   ```cpp
   // e is a value of type Extern<T>, not the type name Extern<T> itself
   // (so Extern<T>.getPayload(e) is a normal static call, not a dynamic access)
@@ -941,17 +943,14 @@ Operands retain their own types, even where the parameter is `Any`. Passing them
 
 ### 4.4. Desugaring of `getExtern` and `setExtern`
 
-In `std.core`, Sema would type `this.payload` as a dynamic member access (section 4.1.3), so `Extern<T>` uses the intrinsics `getExtern` and `setExtern` instead. After Sema, `DesugarIntrinsicCallExpr` in [CallExpr.cpp](https://github.com/CJPLUK/cangjie_compiler/blob/feature_extern_simple_model/src/Sema/Desugar/AfterTypeCheck/CallExpr.cpp) recognizes the two `std.core` intrinsics by name and calls `DesugarExternPayloadIntrinsic`, which sets the `desugarExpr` of the call:
+In `std.core`, Sema would type `this.payload` as a dynamic member access, so `Extern<T>` uses the intrinsics `getExtern` and `setExtern` instead. After Sema, `DesugarIntrinsicCallExpr` in [CallExpr.cpp](https://github.com/CJPLUK/cangjie_compiler/blob/feature_extern_simple_model/src/Sema/Desugar/AfterTypeCheck/CallExpr.cpp) recognizes the two `std.core` intrinsics by name and calls `DesugarExternPayloadIntrinsic`, which sets the `desugarExpr` of the call:
 
 | Call | Desugared | Type |
 |---|---|---|
 | `getExtern(e)` | `e.payload` | `Any` |
 | `setExtern(e, v)` | `e.payload = v`, with `e.payload` marked `LEFT_VALUE` | `Unit` |
-| either, with `e: Nothing` | `e` | `Nothing` |
 
-The member access is created with `CreateMemberAccess`, which binds its `target` to the `payload` declaration of `Extern<T>`. `IsDynamicExternMemberAccess` and `IsDynamicExternUpdate` (section 4.3) only match member accesses without a target, so `DesugarExtern`, which runs later in the same stage (section 4.2.1), leaves these accesses unchanged. The translation to CHIR then handles them as ordinary struct field reads and writes. No new intrinsic kind is added to CHIR. The names `payload`, `getExtern` and `setExtern` are the new constants `STD_LIB_EXTERN_PAYLOAD`, `STD_LIB_GET_EXTERN` and `STD_LIB_SET_EXTERN` in [ConstantsUtils.h](https://github.com/CJPLUK/cangjie_compiler/blob/feature_extern_simple_model/include/cangjie/Utils/ConstantsUtils.h).
-
-An argument `e` of type `Nothing` ends control flow, so neither the payload nor `v` is accessed and the call is replaced by `e` alone.
+The member access is created with `CreateMemberAccess`, which binds its `target` to the `payload` declaration of `Extern<T>`. `IsDynamicExternMemberAccess` and `IsDynamicExternUpdate` ([section 4.3](#43-helpers)) only match member accesses without a target, so `DesugarExtern`, which runs later in the same stage ([section 4.2.1](#421-the-pass)), leaves these accesses unchanged. The translation to CHIR then handles them as ordinary struct field reads and writes. No new intrinsic kind is added to CHIR.
 
 ---
 
