@@ -865,7 +865,6 @@ The converted value cannot always be shared, because only one of the operators m
 | `i`, both operators take `Extern<T>` | `i` | 2 |
 | `i`, only one operator takes `Extern<T>` | `i` | 1 |
 | `T.toExtern(i)`, written by the user | `T.toExtern(i)` | 1 |
-| `if (b) {i} else {j}`, both operators take `Extern<T>` | the `if`, whose branches are converted | 1 |
 
 The changes:
 - `TryConvert`: a clone mapped to a converted expression, such as `i'`, is mapped to the operand of the conversion instead. The mapping is put on the innermost `desugarExpr` of the operand, where CHIR reads it, so an index such as a block, a pipeline or an interpolated string is not evaluated twice.
