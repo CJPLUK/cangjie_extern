@@ -271,8 +271,6 @@ public class MockRT <: ForeignRuntime<MockRT> {
 
 #### 3.2.1 Type checking rules
 
-The type checking rules for the forced cast are described in [Appendix A.4](#appendix-a4) (out of review scope).
-
 ##### Extensions of `Extern`
 
 An extension targeting `Extern<T>` is a type error, including through a type alias.
@@ -294,7 +292,7 @@ error: extending type 'Struct-Extern<Generics-T>' is not allowed
 
 ##### `Extern` in `const` code
 
-Implicit conversions to `Extern<T>` and dynamic operations on `Extern<T>` are desugared into calls to static functions of `T`, which are not `const`. So neither is allowed in `const` code. `const` code is the initializer of a `const` variable, the body of a `const` function or constructor, a member initializer of a type with a `const` constructor, and an annotation argument. Everything else about `Extern<T>` is allowed: `const` code may declare, hold, pass, return and test `Extern<T>` values, e.g. a `const` function with an `Extern<T>` parameter, or `a is Extern<T>`. `Extern<T>` has no `const` constructor, so `Extern<T>(v)` is rejected by the usual rule that only `const` functions can be called.
+Implicit conversions to `Extern<T>` and dynamic operations on `Extern<T>` are desugared into calls to static functions of `T`, which are not `const`. So neither is allowed in `const` code. Everything else about `Extern<T>` is allowed: `const` code may declare, hold, pass, return and test `Extern<T>` values, e.g. a `const` function with an `Extern<T>` parameter, or `a is Extern<T>`. `Extern<T>` has no `const` constructor, so `Extern<T>(v)` is rejected by the usual rule that only `const` functions can be called.
 
 Examples:
 
@@ -320,7 +318,7 @@ When `Extern<T>` is expected in a context that allows implicit conversion (liste
 | Array or tuple literal element | element type of the literal | `let arr: Array<Extern<T>> = [exp1, exp2]`, `let tpl: (Extern<T>, Int64) = (exp, 1)` |
 | Branch of `if`, `match` or `try`, including `catch` and effect handlers | expected type of the `if`, `match` or `try` | `let x: Extern<T> = if (c) { exp1 } else { exp2 }` |
 
-The last two rows apply recursively, e.g. `[[1]]` is accepted as `Array<Array<Extern<T>>>`. Blocks, parenthesized expressions, `if`, `match`, `try` and loops are never converted as a whole: only the values they produce are. So loops, an `if` without `else`, a `try` with resources and a block ending with a declaration, whose type is `Unit`, are type errors as for any other expected type. Other expressions, including literals, lambdas, `spawn` and `synchronized`, are converted as a whole when they are themselves expected to be `Extern<T>`. For `synchronized`, the conversion thus runs after the lock is released.
+Blocks, parenthesized expressions, `if`, `match`, `try` and loops are never converted as a whole: only the values they produce are. So loops, an `if` without `else`, a `try` with resources and a block ending with a declaration, whose type is `Unit`, are type errors as for any other expected type. Other expressions, including literals, lambdas, `spawn` and `synchronized`, are converted as a whole when they are themselves expected to be `Extern<T>`. For `synchronized`, the conversion thus runs after the lock is released.
 
 Implicit conversions play no part in overload resolution: a candidate whose parameter is `Extern<T>` is ranked by the usual most-specific rule, whether or not its argument needs a conversion. So a call is ambiguous when one candidate needs a conversion, another one does not, and neither is more specific.
 
@@ -380,14 +378,14 @@ m(1)                                              // OK, calls m(p: Extern<R>), 
 
 ##### Dynamic operations
 
-For a value `e: Extern<T>`, dynamic field accesses and dynamic calls have type `Extern<T>`, while dynamic updates have type `Unit`.
+For a value `e: Extern<T>`, dynamic field accesses, dynamic index accesses, and dynamic calls have type `Extern<T>`, while dynamic updates have type `Unit`.
 
 | Operation | Rule | Result type |
 |---|---|---|
 | `e.f` | No compile-time check on field `f`. | `Extern<T>` |
 | `e[idx]` | Index must be well-typed expressions of `Any` type. | `Extern<T>` |
 | `e(a1, ..., an)` | Arguments must be well-typed expressions of `Any` type; named and `inout` arguments are rejected. | `Extern<T>` |
-| `e.f = v`, `e[idx] = v`, `e.f op= v`, `e[idx] op= v` | Index and `v` must be well-typed expressions of `Any` type. | `Unit` |
+| `e.f = v`, `e[idx] = v`, `e.f op= v`, `e[idx] op= v` | `idx` and `v` must be well-typed expressions of `Any` type. | `Unit` |
 
 Indices, arguments and update values do not implicitly call `toExtern`. Assignment to an `Extern<T>` variable follows ordinary assignment rules. Operators rewritten as member calls follow the dynamic-call rules. Multiple assignment checks each update independently.
 
@@ -416,11 +414,9 @@ e.f(inout x)             // type error: inout arguments are rejected
 
 #### 3.2.2 Desugaring after SEMA
 
-The desugaring of the forced cast is described in [Appendix A.5](#appendix-a5) (out of review scope).
-
 ##### Implicit conversion to `Extern<T>` <span id="implicit-conversion-to-externt"></span>
 
-`exp: U` in a context where an expression of type `Extern<T>` is expected (see rules in the type checking section [above](#implicit-conversion)), with `U` neither `Extern<T>` nor `Nothing`, becomes `T.toExtern<U>(exp)`.
+When `Extern<T>` is expected, an expression `exp` of type `U` becomes `T.toExtern<U>(exp)` if `U` is neither `Extern<T>` nor `Nothing`. The contexts where such a conversion is inserted are listed under [Implicit conversion](#implicit-conversion).
 
 Examples:
 Assume `cjexp` has type `U` with `U != Extern<T>`. Then:
@@ -581,17 +577,6 @@ DESUGAR(e1.a.b(e2.c, e3[0], n + 1)) ~>
     )
 ```
 
-Example 8:
-
-For a variable `x: Extern<T>` and a function `foo(): C`, where `C` has a field `f: Extern<T>`.
-
-```cangjie
-DESUGAR(x += 1)       ~>
-    x = T.functionCall(T.memberAccess(x, "+"), [1])
-DESUGAR(foo().f *= 2) ~>
-    foo().f = T.functionCall(T.memberAccess(foo`.f, "*"), [2])   // foo() is evaluated once, foo` is a reference for foo()
-```
-
 #### 3.2.3 Other forms of assignment
 
 ##### Multiple Assignment Expression <span id="multiple-assignment-expression"></span>
@@ -607,23 +592,23 @@ Compound assignment to a dynamic member or index needs an explicit read/call/wri
 Let `lhs: Extern<T>` be a mutable variable, or a non-dynamic extern operation of type `Extern<T>` (e.g. `foo.f1.e2` of type `Extern<T>`, where `foo` and `foo.f1` are not of non-Extern type) and `cjexp` of any type, then:
 
 ```cangjie
-x += cjexp
+lhs += cjexp
 ```
 
 is desugared into
 
 ```cangjie
-x = T.functionCall(T.memberAccess(x`, "+"), [cjexp])
+lhs = T.functionCall(T.memberAccess(lhs', "+"), [cjexp])
 ```
 
-``x` `` above represents a reference to the expression ``x` ``. Compiler already has support for this.
+``lhs'`` above represents a reference to the expression ``x'``. Compiler already has support for this.
 
 ###### Case 2
 
-Let `e1: Extern<T>` and `e2: Extern<T>`, then:
+Let `e1: Extern<T>` then:
 
 ```cangjie
-e1.foo += e2
+e1.foo += exp
 ```
 
 is desugared into
@@ -631,15 +616,15 @@ is desugared into
 ```cangjie
 let tmp1 = e1
 let tmp2 = T.memberAccess(T.memberAccess(tmp1, "foo"), "+")
-T.memberUpdate(tmp1, "foo", T.functionCall(tmp2, [e2]))
+T.memberUpdate(tmp1, "foo", T.functionCall(tmp2, [exp]))
 ```
 
 ###### Case 3
 
-Let `e1: Extern<T>`, `e2: Extern<T>`, and `idx: Any`, then:
+Let `e1: Extern<T>` then:
 
 ```cangjie
-e1[idx] += e2
+e1[idx] += exp
 ```
 
 is desugared into
@@ -649,7 +634,7 @@ let tmp1 = e1
 let tmp2 = idx
 let tmp3 = T.indexedAccess(tmp1, tmp2)
 let tmp4 = T.memberAccess(tmp3, "+")
-T.indexedUpdate(tmp1, tmp2, T.functionCall(tmp4, [e2]))
+T.indexedUpdate(tmp1, tmp2, T.functionCall(tmp4, [exp]))
 ```
 
 The same expansions apply to other compound operators, using the operator name without `=` (e.g. `"-"` for `-=`), and to any well-typed right-hand side. Any dynamic subexpressions in the receiver, index or right-hand side are recursively desugared.
