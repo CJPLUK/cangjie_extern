@@ -651,9 +651,10 @@ conversions and dynamic operations and gives them their types, without rewriting
 then rewrites the `getExtern` and `setExtern` intrinsics used inside `Extern<T>` into payload field accesses, and the
 new `DesugarExtern` pass rewrites the dynamic operations and implicit conversions in one pass, driven by the final types.
 
-The only change in CHIR is the translation of mapped arguments needed by compound assignment (see
-[Compound assignment of an Extern variable or field](#compound-assignment-of-an-extern-variable-or-field)); the backend
-is unchanged.
+The only changes in CHIR are in the translation of mapped values needed by compound assignment (see
+[Compound assignment of an Extern variable or field](#compound-assignment-of-an-extern-variable-or-field) and
+[Compound assignment of an index with Extern subscript operators](#compound-assignment-of-an-index-with-extern-subscript-operators));
+the backend is unchanged.
 
 The section is organized as follows:
 - [4.1. Type checking](#41-type-checking): the Sema changes.
@@ -745,22 +746,8 @@ One change is needed for the **pipeline `x |> e`**, which is desugared during ty
 
 `CheckConstEvaluation` runs among the checks after Sema, before `DesugarExtern` inserts the `toExtern` calls and the runtime calls, so it cannot see them. Instead, `ConstEvaluationChecker` in [ConstEvaluationChecker.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/ConstEvaluationChecker.cpp) finds the nodes that `DesugarExtern` will rewrite, using the same tests on the typed AST:
 
-- **Dynamic operations.** `ChkExpr` reports `sema_extern_operation_in_const` and fails, before the usual check, when `IsDynamicExternOperation` (section 4.3) holds, the test that `DesugarExtern` also uses to find the operations it rewrites. `ChkDesugarExpr` checks a call that is the `desugarExpr` of another node without going through `ChkExpr`, so it makes the same check, e.g. for `x |> e`, desugared into the dynamic call `e(x)` (section 4.1.3). The operands are not checked, so each operation is reported once.
-- **Implicit conversions.** A converted value keeps its own type, so a conversion is found by comparing a value with the type expected for it. `ChkNoExternConversion(value, expected)` reports `sema_extern_conversion_in_const` when `NeedExternConversion` (section 4.3) holds, the test that `DesugarExtern` also uses: `expected` is `Extern<T>` and the type of `value` is not a subtype of it. So `Extern<A>` used where `Extern<B>` is expected is a conversion. `ConstEvaluationChecker`, like `ExternDesugaring`, holds the `TypeManager` that the test needs. Its overload for a `Block` compares its last expression, or `Unit` when the block is empty or ends with a declaration. It is called after the usual check of the value, at the places where `DesugarExtern` converts (section 4.2.2):
-
-| Value | Expected type | In |
-|---|---|---|
-| Initializer of a variable, including a member variable of a type with a `const` constructor | declared type | `ChkVarDeclAbstract`, `ChkDeclHasConstAllConstInitializers` |
-| Assigned value, e.g. `this.e = 1` in a `const` constructor (not compound assignments) | type of the left value | `ChkAssignExpr` |
-| Call argument, in `desugarArgs` order when present | parameter type | `ChkCallExpr` |
-| Default value of a parameter of a `const` function | parameter type | `ChkFuncBody`; the generated default function is marked `const` only if this check passes |
-| `return` value | return type of the function, except constructors | `ChkReturnExpr` |
-| Function or lambda body | return type, except constructors | `ChkFuncBody` |
-| Tuple literal element | element type | `ChkTupleLit`, which replaces `ChkChildren` for `TupleLit` |
-| Right operand of `a ?? b`, which `TryDesugarForCoalescing` turns into a `match` branch after this check | type of the expression | `ChkBinaryExpr` |
-| `if` branches, `match` cases, `try` and `catch` blocks | type of the expression | `ChkIfExpr`, `ChkMatchExpr`, `ChkTryExpr` |
-
-`Array` literals and `Array(n, item: v)` are not checked, as they are already not `const`. `ExternDesugaring` does not convert `VArray` literals.
+- **Dynamic operations.** `ChkExpr` reports `sema_extern_operation_in_const` and fails, before the usual check, when `IsDynamicExternOperation` (section 4.3) holds, the test that `DesugarExtern` also uses to find the operations it rewrites.
+- **Implicit conversions.** A converted value keeps its own type, so a conversion is found by comparing a value with the type expected for it. `ChkNoExternConversion(value, expected)` reports `sema_extern_conversion_in_const` when `NeedExternConversion` (section 4.3) holds, the test that `DesugarExtern` also uses: `expected` is `Extern<T>` and the type of `value` is not a subtype of it. So `Extern<A>` used where `Extern<B>` is expected is a conversion.
 
 ### 4.2. Desugaring
 
@@ -832,7 +819,7 @@ if NeedExternConversion(U, Extern<T>):
 
 #### 4.2.3. Dynamic operations
 
-A dynamic node is one of the expressions recognized by the `IsDynamicExtern*` predicates (section 4.3). It becomes a direct static call to the corresponding `ForeignRuntime<T>` function. For example, `e.a.b(1)` becomes `T.functionCall(T.memberAccess(T.memberAccess(e, "a"), "b"), [1])`.
+A dynamic node is one of the expressions recognized by the `IsDynamicExtern*` predicates ([section 4.3](#43-helpers)). It becomes a direct static call to the corresponding `ForeignRuntime<T>` function. For example, `e.a.b(1)` becomes `T.functionCall(T.memberAccess(T.memberAccess(e, "a"), "b"), [1])`.
 
 ##### Rewriting dynamic nodes
 
@@ -856,58 +843,41 @@ Sema rewrites `lhs op= v`, where `lhs: Extern<T>` is a variable `x` or a field `
 
 This needs a small change in CHIR, in `TranslateTrivialArgWithNoSugar` in [TranslateCallExpr.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/CHIR/AST2CHIR/TranslateASTNode/TranslateCallExpr.cpp). When `lhs` is a field `exp.f`, the CHIR value mapped to `lhs'` is a reference to the field, but `lhs'` is now an argument of `T.memberAccess` and must be passed by value. A mapped argument is therefore dereferenced with `GetDerefedValue`. For other mapped arguments, such as indices, which are already values, this does nothing. An assertion checks that a mapped argument of reference type points to a class or array, or has type `Extern<T>`.
 
+##### Compound assignment of an index with Extern subscript operators
+
+Sema rewrites `c[i] op= v`, `c[i]++` and `c[i]--`, with `c` of a non-Extern type, into `c.[](i, value: c.[](i').op(v))`, where `i'` is mapped to `i`: CHIR evaluates `i` once, for the setter, and the getter's `i'` reuses its value. If a subscript operator takes `Extern<T>`, its index is converted. For example:
+
+```cangjie
+class C {
+    operator func [](index: Extern<RT>): Int64 { ... }                // getter
+    operator func [](index: Extern<RT>, value!: Int64): Unit { ... }  // setter
+}
+
+c[next()] += 1
+// c.[](RT.toExtern(next()), value: c.[](RT.toExtern(next()')).+(1))
+// next() is called once, RT.toExtern twice
+```
+
+The converted value cannot always be shared, because only one of the operators may take `Extern<T>`. So the value is shared before the conversion, and each operator converts it. The table shows, for an `Int64` index `i`, which value is evaluated once and shared, and how many times `toExtern` runs:
+
+| Index | Shared value | `toExtern` calls |
+|---|---|---|
+| `i`, both operators take `Extern<T>` | `i` | 2 |
+| `i`, only one operator takes `Extern<T>` | `i` | 1 |
+| `T.toExtern(i)`, written by the user | `T.toExtern(i)` | 1 |
+| `if (b) {i} else {j}`, both operators take `Extern<T>` | the `if`, whose branches are converted | 1 |
+
+The changes:
+- `TryConvert`: a clone mapped to a converted expression, such as `i'`, is mapped to the operand of the conversion instead. The mapping is put on the innermost `desugarExpr` of the operand, where CHIR reads it, so an index such as a block, a pipeline or an interpolated string is not evaluated twice.
+- `ProcessMapExpr` in [TranslateCallExpr.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/CHIR/AST2CHIR/TranslateASTNode/TranslateCallExpr.cpp): when the setter's index is converted, the value of the operand is cached for the getter's index.
+
 ##### Compound assignment of a dynamic member or index
 
-For `e.f op= v` or `e[i] op= v` with `e: Extern<T>`, the pass creates a block with the temporaries and runtime calls shown in [Compound Assignment](#compound-assignment), cases 2 and 3. The block has type `Unit`. The receiver and index are saved before reading the current value, looking up the operator, evaluating the right-hand side, calling the operator, and writing the result back. Dynamic subexpressions in the initializers and right-hand side are recursively desugared.
+For `e.f op= v` or `e[i] op= v` with `e: Extern<T>`, `BuildCompoundAssignment` in [ExternDesugaring.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/Desugar/AfterTypeCheck/ExternDesugaring.cpp) creates a block with the temporaries and runtime calls shown in [Compound Assignment](#compound-assignment), cases 2 and 3. The block has type `Unit`. The receiver and index are saved before reading the current value, looking up the operator, evaluating the right-hand side, calling the operator, and writing the result back. Dynamic subexpressions in the initializers and right-hand side are recursively desugared.
 
-#### 4.2.4. The generated calls
-
-The pass creates fully typed ASTs, which are not type checked again. The calls, their callees and the `Array` literal are marked `IMPLICIT_ADD`. The created nodes take the source position of the node they replace.
-
-##### `T.toExtern<U>(e)`
-
-```text
-CallExpr [CALL_DECLARED_FUNCTION, resolvedFunction = toExtern, ty = Extern<T>]
-├─ MemberAccess "toExtern" [target = toExtern, instTys = {U}, ty = (U) -> Extern<T>]
-│  └─ RefExpr T [ty = T]    // the runtime's declaration, or the GenericParamDecl for a generic T
-└─ FuncArg [ty = U]
-   └─ e                     // its previous desugarExpr, or a clone of e
-```
-
-##### `T.fromExtern<U>(e)`
-
-```text
-CallExpr [CALL_DECLARED_FUNCTION, resolvedFunction = fromExtern, ty = U]
-├─ MemberAccess "fromExtern" [target = fromExtern, instTys = {U}, ty = (Extern<T>) -> U]
-│  └─ RefExpr T [ty = T]
-└─ FuncArg [ty = Extern<T>]
-   └─ e                     // recursively desugared
-```
-
-##### Dynamic runtime calls
-
-Each dynamic operation produces a call to a static method `M` of runtime `T`:
-
-```text
-CallExpr [CALL_DECLARED_FUNCTION, resolvedFunction = M, ty = result type of M]
-├─ MemberAccess M [target = M, ty = the type of M as a member of T]
-│  └─ RefExpr T [ty = T]
-└─ FuncArg [ty = type of the argument] x one per parameter of M
-```
-
-`M` is the implementation of the `ForeignRuntime<T>` function in `T`, possibly inherited. Its type as a member of `T` also substitutes the type parameters of a generic class it is inherited from. For example, `memberAccess(e: E, name: String): E` inherited by `RT <: AccessBase<Extern<RT>>` has type `(Extern<RT>, String) -> Extern<RT>`.
-
-The arguments and result type of each call:
-
-| Method `M` | Arguments | Result type |
-|---|---|---|
-| `memberAccess` | `DESUGAR(e)`; the name `f` as a `String` literal | `Extern<T>` |
-| `indexedAccess` | `DESUGAR(e)`; `DESUGAR(i)` | `Extern<T>` |
-| `functionCall` | `DESUGAR(e)`; an `Array<Any>` literal, with its constructor set, holding `DESUGAR(a)` for each argument `a` | `Extern<T>` |
-| `memberUpdate` | `DESUGAR(e)`; the name `f` as a `String` literal; `DESUGAR(v)` | `Unit` |
-| `indexedUpdate` | `DESUGAR(e)`; `DESUGAR(i)`; `DESUGAR(v)` | `Unit` |
-
-Operands retain their own types, even where the parameter is `Any`. Passing them to these calls does not introduce `toExtern` conversions.
+- `BuildMemberCompoundUpdate`: `e.f op= v`, ending with `T.memberUpdate`.
+- `BuildIndexedCompoundUpdate`: `e[i] op= v`, ending with `T.indexedUpdate`. For `e[i1, ..., in] op= v`, the receiver is `e[i1, ..., in-1]`, built by `BuildIndexedReceiver`, and only `in` is saved as the index.
+- `CreateCompoundOpCall`: the operator lookup `let o = T.memberAccess(current, "op")` and the call `T.functionCall(o, [v])`, shared by both.
 
 ### 4.3. Helpers
 
