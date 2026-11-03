@@ -686,10 +686,6 @@ else:
 
 `IsControlFlowExpr(node)` is true for `if`, `match`, `try`, blocks, parenthesized expressions, and loops. These are checked as usual. For `if`, `match`, `try`, blocks, and parenthesized expressions, the target `Extern<T>` is passed to the expressions that produce their values, so conversion applies to those values rather than to the whole node. Loops check their type `Unit` against the target as usual. `synchronized` is not included, so that it is converted as a whole and the conversion runs after the lock is released. A value of type `Unit` that doesn't come from a branch is therefore an error, as it is for any other target: a loop, an `if` without `else`, and a `try` with resources.
 
-##### Overload ranking
-
-Overload resolution is unchanged. A candidate is viable when each argument checks against its parameter type, which for `Extern<T>` accepts any well-typed argument through `Check`. Viable candidates are then ranked by the usual most-specific rule, without considering conversions, and an ambiguity is an error.
-
 #### 4.1.3. Dynamic operations
 
 A dynamic field access, index access, or call is typed `Extern<T>`, the type of its receiver. A dynamic field or index update, including compound assignment, is typed `Unit`.
@@ -839,44 +835,37 @@ In `e.a.b(1)`, the call is replaced first, then `e.a.b` and `e.a` become nested 
 
 ##### Compound assignment of an Extern variable or field
 
-Sema rewrites `lhs op= v`, where `lhs: Extern<T>` is a variable `x` or a field `exp.f` with `exp` of a non-Extern type, into `lhs = lhs'.op(v)`, where the copy `lhs'` is mapped to `lhs` (`DesugarOperatorOverloadExpr`, as for any operator overloading). The pass desugars `lhs'.op(v)` into `T.functionCall(T.memberAccess(lhs', "op"), [v])`, recursively desugaring its operands and keeping the mapping so that the left-hand side is evaluated only once.
+Sema rewrites `lhs op= v`, with `lhs: Extern<T>` a variable or a field of a non-Extern value, into `lhs = lhs'.op(v)`, where `lhs'` is mapped to `lhs`. The pass turns `lhs'.op(v)` into `T.functionCall(T.memberAccess(lhs', "op"), [v])` and keeps the mapping, so `lhs` is evaluated once.
 
-This needs a small change in CHIR, in `TranslateTrivialArgWithNoSugar` in [TranslateCallExpr.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/CHIR/AST2CHIR/TranslateASTNode/TranslateCallExpr.cpp). When `lhs` is a field `exp.f`, the CHIR value mapped to `lhs'` is a reference to the field, but `lhs'` is now an argument of `T.memberAccess` and must be passed by value. A mapped argument is therefore dereferenced with `GetDerefedValue`. For other mapped arguments, such as indices, which are already values, this does nothing. An assertion checks that a mapped argument of reference type points to a class or array, or has type `Extern<T>`.
+CHIR change, `TranslateTrivialArgWithNoSugar` in [TranslateCallExpr.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/CHIR/AST2CHIR/TranslateASTNode/TranslateCallExpr.cpp): for a field, the mapped value is a reference, so a mapped argument is dereferenced with `GetDerefedValue`.
 
 ##### Compound assignment of an index with Extern subscript operators
 
-Sema rewrites `c[i] op= v`, `c[i]++` and `c[i]--`, with `c` of a non-Extern type, into `c.[](i, value: c.[](i').op(v))`, where `i'` is mapped to `i`: CHIR evaluates `i` once, for the setter, and the getter's `i'` reuses its value. If a subscript operator takes `Extern<T>`, its index is converted. For example:
+Sema rewrites `c[i] op= v`, `c[i]++` and `c[i]--`, with `c` of a non-Extern type, into `c.[](i, value: c.[](i').op(v))`, where `i'` is mapped to `i`. If an operator takes `Extern<T>`, its index is converted. Only one of them may, so `i` is shared before the conversion:
 
 ```cangjie
 class C {
-    operator func [](index: Extern<RT>): Int64 { ... }                // getter
-    operator func [](index: Extern<RT>, value!: Int64): Unit { ... }  // setter
+    operator func [](index: Extern<RT>): Int64 { ... }
+    operator func [](index: Extern<RT>, value!: Int64): Unit { ... }
 }
 
-c[next()] += 1
-// c.[](RT.toExtern(next()), value: c.[](RT.toExtern(next()')).+(1))
-// next() is called once, RT.toExtern twice
+c[next()] += 1   // c.[](RT.toExtern(next()), value: c.[](RT.toExtern(next()')).+(1))
+                 // next() runs once, RT.toExtern twice
 ```
-
-The converted value cannot always be shared, because only one of the operators may take `Extern<T>`. So the value is shared before the conversion, and each operator converts it. The table shows, for an `Int64` index `i`, which value is evaluated once and shared, and how many times `toExtern` runs:
 
 | Index | Shared value | `toExtern` calls |
 |---|---|---|
 | `i`, both operators take `Extern<T>` | `i` | 2 |
-| `i`, only one operator takes `Extern<T>` | `i` | 1 |
+| `i`, one operator takes `Extern<T>` | `i` | 1 |
 | `T.toExtern(i)`, written by the user | `T.toExtern(i)` | 1 |
 
-The changes:
-- `TryConvert`: a clone mapped to a converted expression, such as `i'`, is mapped to the operand of the conversion instead. The mapping is put on the innermost `desugarExpr` of the operand, where CHIR reads it, so an index such as a block, a pipeline or an interpolated string is not evaluated twice.
-- `ProcessMapExpr` in [TranslateCallExpr.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/CHIR/AST2CHIR/TranslateASTNode/TranslateCallExpr.cpp): when the setter's index is converted, the value of the operand is cached for the getter's index.
+Changes:
+- `TryConvert`: `i'` is mapped to the operand of the conversion of `i`, on its innermost `desugarExpr`, where CHIR reads it.
+- `ProcessMapExpr` in [TranslateCallExpr.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/CHIR/AST2CHIR/TranslateASTNode/TranslateCallExpr.cpp): when the setter's index is converted, the operand's value is cached for `i'`.
 
 ##### Compound assignment of a dynamic member or index
 
-For `e.f op= v` or `e[i] op= v` with `e: Extern<T>`, `BuildCompoundAssignment` in [ExternDesugaring.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/Desugar/AfterTypeCheck/ExternDesugaring.cpp) creates a block with the temporaries and runtime calls shown in [Compound Assignment](#compound-assignment), cases 2 and 3. The block has type `Unit`. The receiver and index are saved before reading the current value, looking up the operator, evaluating the right-hand side, calling the operator, and writing the result back. Dynamic subexpressions in the initializers and right-hand side are recursively desugared.
-
-- `BuildMemberCompoundUpdate`: `e.f op= v`, ending with `T.memberUpdate`.
-- `BuildIndexedCompoundUpdate`: `e[i] op= v`, ending with `T.indexedUpdate`. For `e[i1, ..., in] op= v`, the receiver is `e[i1, ..., in-1]`, built by `BuildIndexedReceiver`, and only `in` is saved as the index.
-- `CreateCompoundOpCall`: the operator lookup `let o = T.memberAccess(current, "op")` and the call `T.functionCall(o, [v])`, shared by both.
+For `e.f op= v` or `e[i] op= v` with `e: Extern<T>`, `BuildCompoundAssignment` in [ExternDesugaring.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/Desugar/AfterTypeCheck/ExternDesugaring.cpp) creates the `Unit` block of [Compound Assignment](#compound-assignment), cases 2 and 3, with `BuildMemberCompoundUpdate`, `BuildIndexedCompoundUpdate` and `CreateCompoundOpCall`.
 
 ### 4.3. Helpers
 
