@@ -290,19 +290,6 @@ Both extensions report:
 error: extending type 'Struct-Extern<Generics-T>' is not allowed
 ```
 
-##### `Extern` in `const` code
-
-Implicit conversions to `Extern<T>` and dynamic operations on `Extern<T>` are desugared into calls to static functions of `T`, which are not `const`. So neither is allowed in `const` code. Everything else about `Extern<T>` is allowed: `const` code may declare, hold, pass, return and test `Extern<T>` values, e.g. a `const` function with an `Extern<T>` parameter, or `a is Extern<T>`. `Extern<T>` has no `const` constructor, so `Extern<T>(v)` is rejected by the usual rule that only `const` functions can be called.
-
-Examples:
-
-```cangjie
-const x: Extern<R> = 1                                 // error: implicit conversion to 'Extern' is not allowed in 'const' code
-const func f(e: Extern<R>): Extern<R> { e.foo }        // error: dynamic operation on 'Extern' is not allowed in 'const' code
-const func g(): Int64 { let t: (Extern<R>, Int64) = (1, 2); 0 } // error: implicit conversion ... (the element 1)
-const func h(b: Bool, e: Extern<R>): (Extern<R>, Int64) { (if (b) { e } else { e }, 1) } // OK
-```
-
 ##### Implicit conversion
 
 When `Extern<T>` is expected in a context that allows implicit conversion (listed below), accept a well-typed expression `exp: U` and retain `U` for later desugaring into `T.toExtern<U>(exp)`, if needed. Values that are already of type `Extern<T>` need no conversion.
