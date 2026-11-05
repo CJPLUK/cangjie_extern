@@ -303,9 +303,6 @@ When `Extern<T>` is expected in a context that allows implicit conversion (liste
 | Function or lambda body | return type, for the last expression | `func f(): Extern<T> { exp }` |
 | Default parameter value | parameter type | `func f(p!: Extern<T> = exp) {}` |
 | Array or tuple literal element | element type of the literal | `let arr: Array<Extern<T>> = [exp1, exp2]`, `let tpl: (Extern<T>, Int64) = (exp, 1)` |
-| Branch of `if`, `match` or `try`, including `catch` and effect handlers | expected type of the `if`, `match` or `try` | `let x: Extern<T> = if (c) { exp1 } else { exp2 }` |
-
-Blocks, parenthesized expressions, `if`, `match`, `try` and loops are never converted as a whole: only the values they produce are. So loops, an `if` without `else`, a `try` with resources and a block ending with a declaration, whose type is `Unit`, are type errors as for any other expected type. Other expressions, including literals, lambdas, `spawn` and `synchronized`, are converted as a whole when they are themselves expected to be `Extern<T>`. For `synchronized`, the conversion thus runs after the lock is released.
 
 Implicit conversions play no part in overload resolution: a candidate whose parameter is `Extern<T>` is ranked by the usual most-specific rule, whether or not its argument needs a conversion. So a call is ambiguous when one candidate needs a conversion, another one does not, and neither is more specific.
 
@@ -336,14 +333,12 @@ let n: Array<Array<Extern<R>>> = [[1], ["s"]]     // OK, 1 and "s" will be conve
 let c: Extern<R> = [x, 12]                        // OK, whole literal will be converted
 
 // Expressions made of blocks of code
-let d: Extern<R> = if (x > 0) { 1 } else { "n" }  // OK, each branch will be converted
-let m: Extern<R> = match (x) {                    // OK, each case will be converted
+let d: Extern<R> = if (x > 0) { 1 } else { 2 }    // OK, the if will be converted
+let m: Extern<R> = match (x) {                    // OK, the match will be converted
     case 0 => "zero"
-    case _ => x
+    case _ => "other"
 }
-let tc: Extern<R> = try { x } catch (_: Exception) { "error" }  // OK, x and "error" will be converted
-let u: Extern<R> = if (x > 0) { 1 }               // type error: an if without else has type Unit
-let w: Extern<R> = while (x > 0) {}               // type error: a loop has type Unit
+let tc: Extern<R> = try { x } catch (_: Exception) { 0 }  // OK, the try will be converted
 
 // No conversion
 let ints: Array<Int64> = [3]
@@ -664,14 +659,12 @@ Extending `Extern` should result in a type error.
 Function `Check` in [`src/Sema/TypeChecker.cpp`](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/TypeChecker.cpp) accepts an expression of any type when the target is `Extern<T>`:
 
 ```text
-if target is Extern<T> and node is an Expr and !IsControlFlowExpr(node):
+if target is Extern<T> and node is an Expr:
     synthesize node without a target
     succeed if the resulting type is a valid type
 else:
     check as before
 ```
-
-`IsControlFlowExpr(node)` is true for `if`, `match`, `try`, blocks, parenthesized expressions, and loops. These are checked as usual. For `if`, `match`, `try`, blocks, and parenthesized expressions, the target `Extern<T>` is passed to the expressions that produce their values, so conversion applies to those values rather than to the whole node. Loops check their type `Unit` against the target as usual. `synchronized` is not included, so that it is converted as a whole and the conversion runs after the lock is released. A value of type `Unit` that doesn't come from a branch is therefore an error, as it is for any other target: a loop, an `if` without `else`, and a `try` with resources.
 
 #### 4.1.3. Dynamic operations
 
@@ -792,7 +785,6 @@ The pass converts a value `e: U` wherever `Extern<T>` is expected in the followi
 | `FuncBody` | last expression of `body` | return type | `func g(): Extern<RT> { 1 }` | `func g(): Extern<RT> { RT.toExtern<Int64>(1) }` |
 | `ArrayLit` of type `Array<E>` | each element | `E` | `let arr: Array<Extern<RT>> = [1, "a"]` | `let arr: Array<Extern<RT>> = [RT.toExtern<Int64>(1), RT.toExtern<String>("a")]` |
 | `TupleLit` of type `(E1, ..., En)` | each component | `Ei` | `let tpl: (Extern<RT>, Int64) = (1, 2)` | `let tpl: (Extern<RT>, Int64) = (RT.toExtern<Int64>(1), 2)` |
-| `IfExpr`, `MatchExpr`, `TryExpr` | last expression of each branch | the type of the node | `if (c) {1} else {"a"}` | `if (c) {RT.toExtern<Int64>(1)} else {RT.toExtern<String>("a")}` |
 
 ```text
 if NeedExternConversion(U, Extern<T>):
