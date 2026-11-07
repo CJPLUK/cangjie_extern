@@ -820,7 +820,7 @@ CHIR change, `TranslateTrivialArgWithNoSugar` in [TranslateCallExpr.cpp](https:/
 
 ##### Compound assignment of an index with Extern subscript operators
 
-Sema rewrites `c[i] op= v`, `c[i]++` and `c[i]--`, with `c` of a non-Extern type, into `c.[](i, value: c.[](i').op(v))`, where `i'` is mapped to `i`. If an operator takes `Extern<T>`, its index is converted. Only one of them may, so `i` is shared before the conversion:
+Sema rewrites `c[i] op= v`, `c[i]++` and `c[i]--`, with `c` of a non-Extern type, into `c.[](i, value: c.[](i').op(v))`, where `i'` is mapped to `i`. Each operator that takes `Extern<T>` converts its own copy of `i`, so `i` is shared before the conversion:
 
 ```cangjie
 class C {
