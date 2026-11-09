@@ -656,15 +656,105 @@ Extending `Extern` should result in a type error.
 
 ##### Conversion in `Check`
 
-Function `Check` in [`src/Sema/TypeChecker.cpp`](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/TypeChecker.cpp) accepts an expression of any type when the target is `Extern<T>`:
+Function `Check` in [`src/Sema/TypeChecker.cpp`](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/TypeChecker.cpp) accepts an expression of any type when the target is `Extern<T>`.
+A new branch is added before the per-node checks, after the target has been substituted with the solved type variables:
 
-```text
-if target is Extern<T> and node is an Expr:
-    synthesize node without a target
-    succeed if the resulting type is a valid type
-else:
-    check as before
+```cpp
+bool TypeChecker::TypeCheckerImpl::Check(ASTContext& ctx, Ptr<Ty> target, Ptr<Node> node)
+{
+    ...
+    if ... {
+    } else if (NeedTryExternConversion(*realTarget, *node)) {
+        chkRet = ChkWithExternConversion(*curCtx, *realTarget, *node);
+    } else {
+        ...
+    }
+    ...
+}
 ```
+
+`NeedTryExternConversion` selects every expression whose target is some `Extern<…>`:
+
+```cpp
+bool TypeChecker::TypeCheckerImpl::NeedTryExternConversion(const Ty& target, const Node& node) const
+{
+    return target.IsCoreExternType() && Is<Expr>(&node);
+}
+```
+
+`ChkWithExternConversion` then checks it:
+
+```cpp
+bool TypeChecker::TypeCheckerImpl::ChkWithExternConversion(ASTContext& ctx, Ty& target, Node& node)
+{
+    ctx.targetTypeMap[&node] = nullptr;
+    bool isWellTyped = Ty::IsTyCorrect(Synthesize({ctx, SynPos::EXPR_ARG}, &node)) && ReplaceIdealTy(node);
+    node.SetTy(typeManager.TryGreedySubst(node.GetTy()));
+    if (!isWellTyped || !Ty::IsTyCorrect(node.GetTy()) || node.GetTy()->HasPlaceholder()) {
+        return false;
+    }
+    // A known Extern<T> accepts any value.
+    if (!target.HasPlaceholder()) {
+        return true;
+    }
+    // Extern<R>, where R is to be inferred, accepts values of other types without constraining R.
+    if (!node.GetTy()->IsCoreExternType()) {
+        return true;
+    }
+    // A value of type Extern<T> is not converted and determines R in the target Extern<R>.
+    return typeManager.IsSubtype(node.GetTy(), &target);
+}
+```
+
+The function types the expression on its own, rejects it if that type is unusable, and then applies one rule with
+three cases.
+
+**Typing the expression on its own.**
+
+- `ctx.targetTypeMap[&node] = nullptr` erases any expected type recorded for the node, so the expression is typed by
+  itself and not as `Extern<…>`. Its own type `U` is what `DesugarExtern` later uses to generate `T.toExtern<U>(e)`.
+- `Synthesize` computes `U` in argument position. `ReplaceIdealTy` turns a literal's provisional type into its default
+  type, for example `1` into `Int64`. `isWellTyped` is false if either step fails.
+- `TryGreedySubst` replaces type variables in `U` that the current inference has already solved. If `U` came out as
+  `Box<T'>` and `T'` is known to be `Int64`, the node gets `Box<Int64>`.
+
+**Rejecting unusable types.** The check fails if any of these holds:
+
+| Condition | Meaning |
+|---|---|
+| `!isWellTyped` | Typing or literal defaulting failed, for example a type error inside the expression. |
+| `!Ty::IsTyCorrect(node.GetTy())` | The resulting type is invalid. |
+| `node.GetTy()->HasPlaceholder()` | `U` still contains unsolved type variables. `toExtern<U>` needs a fully known `U`, so the expression's type has to be fixed before it can be converted. |
+
+**The rule.** A target type has a *placeholder* when it contains a type variable that inference is still solving,
+such as the `R'` in `Extern<R'>`. The three remaining checks are applied in order:
+
+1. `!target.HasPlaceholder()`: the expected type is concrete, like `Extern<RT>`. Accept every well-typed expression:
+   - an `Int64`, a `String` or a lambda, which will be converted;
+   - an `Extern<RT>` value, which needs no conversion;
+   - an `Extern<RT2>` value, which is converted across runtimes;
+   - `Nothing`, such as a `throw`, which `NeedExternConversion` never converts.
+2. `!node.GetTy()->IsCoreExternType()`: the expected type is `Extern<R'>` and the expression isn't an Extern value,
+   for example `1` or `[1]`. Accept it without constraining `R'`; the runtime must come from somewhere else.
+3. `typeManager.IsSubtype(node.GetTy(), &target)`: the expected type is `Extern<R'>` and the expression is an Extern
+   value, for example `e: Extern<RT>`. The subtype check succeeds only if `R'` can be `RT`, and it records that as a
+   constraint for the solver. Values of type `Extern<T>` are the only way to determine the runtime.
+
+**Correspondence with the solver.** During type argument inference, the constraint solver also accepts an argument
+where its parameter type contains `Extern<T>`, through `AcceptsExternConversion` in
+[`src/Sema/LocalTypeArgumentSynthesis.cpp`](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/LocalTypeArgumentSynthesis.cpp).
+The two must agree: inference may re-check an argument against its parameter type while some type variables are
+still unsolved, and the base compiler assumes that this check succeeds when unification did.
+
+The solver change is small. The argument pack gets a flag `externConversion`, set only while the arguments of a call
+are matched against its parameters. `UnifyOne` then treats `argTy <: paramTy` as holding without constraints if one
+side accepts the other by conversion, where neither `Nothing` nor a type with placeholders is ever accepted:
+- an `Extern<T>` without placeholders, or a type without placeholders containing one, accepts any type, like case 1;
+- `Extern<R'>` accepts any type that is not Extern, leaving `R'` unconstrained, like case 2. An `Extern<T>` argument
+  goes through normal matching, which gives `R' = T`, like case 3.
+
+The flag is off for the return type and for matching the bounds of a type variable against each other, where no value
+is converted.
 
 #### 4.1.3. Dynamic operations
 
