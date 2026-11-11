@@ -802,13 +802,16 @@ SynAssignExpr(ae):                         // ae is a dynamic member/index updat
             ae.ty = Unit
 ```
 
-When one of these nodes is checked against an expected type, its result type must be compatible with that type, subject to the implicit-conversion rules above.
+<details>
+<summary>Minor details: binary operators, multiple assignment and pipelines</summary>
 
 No other change is needed for:
 - **Operators.** `e1 + e2` and `-e` are already rewritten into `e1.+(e2)` and `e.-()`, which are dynamic calls of type `Extern<T>`. Comparisons too: `e1 < e2` and `e1 == e2` become `e1.<(e2)` and `e1.==(e2)`, of type `Extern<T>`, so they cannot be the condition of an `if`: they are not `Bool`.
 - **A multiple assignment `(e.x, b) = (1, 2)`,** which becomes one dynamic update per element.
 
 One change is needed for the **pipeline `x |> e`**, which is desugared during type checking into `e(x)`. `TryDesugarFunctionCallExpr` in [DesugarInTypeCheck.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/Desugar/DesugarInTypeCheck.cpp) rewrites a callee that is not a function into `e.()`, the operator `()`. It leaves an `Extern<T>` value (`IsExternValue`, section 4.3) unchanged, so `x |> e` is the dynamic call `e(x)` rather than a call of the dynamic member access `e.()`.
+
+</details>
 
 #### 4.1.4. `Extern` in `const` code
 
