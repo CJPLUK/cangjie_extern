@@ -783,8 +783,8 @@ ChkSubscriptExpr(se):                      // se is e[idx]
         ChkExternSubscript(se):
             se.ty = e.ty
 
-ChkCallExpr(ce):                           // ce is e(args) or e.f(args)
-    synthesize the callee e                // a dynamic callee e.f is accepted as it is
+ChkCallExpr(ce):                           // ce is e(args)
+    synthesize the callee e
     if IsDynamicExternCall(ce):            // before candidate lookup
         ChkExternCall(ce):                 // The arguments are passed to the foreign runtime as Array<Any>
                                            // they may have any type but cannot be named nor inout.
@@ -815,10 +815,15 @@ One change is needed for the **pipeline `x |> e`**, which is desugared during ty
 
 #### 4.1.4. `Extern` in `const` code
 
-`CheckConstEvaluation` runs among the checks after Sema, before `DesugarExtern` inserts the `toExtern` calls and the runtime calls, so it cannot see them. Instead, `ConstEvaluationChecker` in [ConstEvaluationChecker.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/ConstEvaluationChecker.cpp) finds the nodes that `DesugarExtern` will rewrite, using the same tests on the typed AST:
+`CheckConstEvaluation` runs among the checks after Sema, before `DesugarExtern` inserts the `toExtern` calls and the runtime calls, so it cannot see them. Instead, `ConstEvaluationChecker` in [ConstEvaluationChecker.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/ConstEvaluationChecker.cpp) finds the nodes that `DesugarExtern` will rewrite, using the same tests on the typed AST, and reports them as errors.
+
+<details>
+<summary>How dynamic operations and implicit conversions are detected</summary>
 
 - **Dynamic operations.** `ChkExpr` reports `sema_extern_operation_in_const` and fails, before the usual check, when `IsDynamicExternOperation` (section 4.3) holds, the test that `DesugarExtern` also uses to find the operations it rewrites.
 - **Implicit conversions.** A converted value keeps its own type, so a conversion is found by comparing a value with the type expected for it. `ChkNoExternConversion(value, expected)` reports `sema_extern_conversion_in_const` when `NeedExternConversion` (section 4.3) holds, the test that `DesugarExtern` also uses: `expected` is `Extern<T>` and the type of `value` is not a subtype of it. So `Extern<A>` used where `Extern<B>` is expected is a conversion.
+
+</details>
 
 ### 4.2. Desugaring
 
