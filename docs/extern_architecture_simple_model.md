@@ -614,10 +614,12 @@ The same expansions apply to other compound operators, using the operator name w
 Section 3 defined which `Extern` expressions the compiler accepts and what they are rewritten into. This section
 describes how that is implemented in `cjc`.
 
-The work is split between two stages: Sema only accepts the implicit
-conversions and dynamic operations and gives them their types, without rewriting anything; the desugaring after Sema
-then rewrites the `getExtern` and `setExtern` intrinsics used inside `Extern<T>` into payload field access/update as part of `DesugarIntrinsicCallExpr`; and the
-new `DesugarExtern` pass rewrites the dynamic operations and implicit conversions in one pass, driven by the final types.
+The work is split between two stages:
+
+- **Sema** accepts the implicit conversions and dynamic operations and gives them their types, without rewriting anything.
+- **Desugaring after Sema** does the rewriting, in two steps:
+  1. Existing `DesugarIntrinsicCallExpr` rewrites the `getExtern` and `setExtern` intrinsics used inside `Extern<T>` into reads and writes of the payload field.
+  2. The new `DesugarExtern` pass then rewrites the dynamic operations and implicit conversions in a single walk, using the types that Sema determined.
 
 The only changes in CHIR are in the translation of mapped values needed by compound assignment (see
 [Compound assignment of an Extern variable or field](#compound-assignment-of-an-extern-variable-or-field) and
@@ -636,7 +638,7 @@ The section is organized as follows:
 
 #### 4.1.1. `Extern` cannot be extended
 
-Extending `Extern` should result in a type error.
+Extending `Extern` results in a type error.
 
 `CheckExtendedTypeValidity` in [TypeCheckExtend.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/TypeCheckExtend.cpp) should report `sema_illegal_extended_type` for `extend Extern<T>`, including through a type alias.
 
