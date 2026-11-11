@@ -421,20 +421,6 @@ let a: Array<Extern<R>> = [x, 12]
 let b: Extern<R> = [x, 12]
 // ~>
 // let b: Extern<R> = R.toExtern<Array<Int64>>([x, 12])
-
-let x: Extern<R> = if (c) { 1 } else { "a" }
-// ~>
-// let x: Extern<R> = if (c) { R.toExtern<Int64>(1) } else { R.toExtern<String>("a") }
-
-let y: Extern<R> = match (n) {
-    case 0 => println("zero"); 0
-    case _ => e
-}
-// ~>
-// let y: Extern<R> = match (n) {
-//     case 0 => println("zero"); R.toExtern<Int64>(0)
-//     case _ => e                                    // e: Extern<R> needs no conversion
-// }
 ```
 
 ##### Dynamic Extern expression desugaring
@@ -630,13 +616,15 @@ describes how that is implemented in `cjc`.
 
 The work is split between two stages: Sema only accepts the implicit
 conversions and dynamic operations and gives them their types, without rewriting anything; the desugaring after Sema
-then rewrites the `getExtern` and `setExtern` intrinsics used inside `Extern<T>` into payload field accesses, and the
+then rewrites the `getExtern` and `setExtern` intrinsics used inside `Extern<T>` into payload field access/update as part of `DesugarIntrinsicCallExpr`; and the
 new `DesugarExtern` pass rewrites the dynamic operations and implicit conversions in one pass, driven by the final types.
 
 The only changes in CHIR are in the translation of mapped values needed by compound assignment (see
 [Compound assignment of an Extern variable or field](#compound-assignment-of-an-extern-variable-or-field) and
-[Compound assignment of an index with Extern subscript operators](#compound-assignment-of-an-index-with-extern-subscript-operators));
-the backend is unchanged.
+[Compound assignment of an index with Extern subscript operators](#compound-assignment-of-an-index-with-extern-subscript-operators)).
+
+
+Stages after CHIR are unchanged.
 
 The section is organized as follows:
 - [4.1. Type checking](#41-type-checking): the Sema changes.
