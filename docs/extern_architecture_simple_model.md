@@ -141,8 +141,8 @@ flowchart TB
 | Component | Role |
 | --- | --- |
 | `cangjie_runtime` - std.core | (1) New file [`extern_runtime.cj`](https://github.com/CJPLUK/cangjie_runtime/compare/469f9ebc73959d3eb8d2b79b424aeceaf492bb94...feature_extern_simple_model#diff-515353015ae80d6a51e0732df3b0e55484e5d9beb4708440b17be668f06d370e) in `std.core` with `Extern<T>` struct, `ForeignRuntime<T>` interface, new exceptions, and documentation about new public declarations. Details in section [3.1. Standard library (`std.core`)](#31-standard-library-stdcore): [`Extern<T>` struct](#externt-struct), [`ForeignRuntime<T>` interface](#foreignruntimet-interface), [exceptions](#exception-hierarchy-all-in-stdcore). |
-| `cangjie_compiler` - Sema | (2) Type checking of Extern expressions and annotate Extern expression that need desugaring. Typing rules in section [3.2.1. Type Checking Rules](#321-type-checking-rules). Implementation details in [4.1. Type checking](#41-type-checking). |
-| `cangjie_compiler` - Desugar After Sema | (3) Additional pass to desugar annotated Extern expressions. Desugaring rules in section [3.2.2. Desugaring after sema](#322-desugaring-after-sema). Implementation details in [4.2. Desugaring](#42-desugaring). |
+| `cangjie_compiler` - Sema | (2) Type checking of Extern expressions and annotate Extern expression that need desugaring. Typing rules in section [3.2.1. Typing rules](#321-typing-rules). Implementation details in [4.1. Type checking](#41-type-checking). |
+| `cangjie_compiler` - Desugar After Sema | (3) Additional pass to desugar annotated Extern expressions. Desugaring rules in section [3.2.2. Translation to `ForeignRuntime` calls](#322-translation-to-foreignruntime-calls). Implementation details in [4.2. Desugaring](#42-desugaring). |
 | `cangjie_compiler` - CHIR | (4) Dereference mapped call arguments, needed for compound assignment `x.f op= v` of a field `x.f: Extern<T>`. Details in [Compound assignment of an Extern variable or field](#compound-assignment-of-an-extern-variable-or-field). |
 | `cangjie_tools` | Consequence of (1). Some LSP tests golden files need to be updated because of additional new public declarations in std.core. See golden files diffs in [GitCode PR](https://gitcode.com/Cangjie/cangjie_tools/pull/1355/diffs). |
 
@@ -266,10 +266,10 @@ public class MockRT <: ForeignRuntime<MockRT> {
 }
 ```
 
-### 3.2 Compiler changes
+### 3.2 Language semantics <span id="32-language-semantics"></span>
 
 
-#### 3.2.1 Type checking rules
+#### 3.2.1 Typing rules <span id="321-typing-rules"></span>
 
 ##### Extensions of `Extern`
 
@@ -290,7 +290,7 @@ Both extensions report:
 error: extending type 'Struct-Extern<Generics-T>' is not allowed
 ```
 
-##### Implicit conversion
+##### Implicit conversions <span id="typing-implicit-conversions"></span>
 
 When `Extern<T>` is expected in a context that allows implicit conversion (listed below), accept a well-typed expression `exp: U` and retain `U` for later desugaring into `T.toExtern<U>(exp)`, if needed. Values that are already of type `Extern<T>` need no conversion.
 
@@ -358,7 +358,7 @@ func m(p: Extern<R>) {}
 m(1)                                              // OK, calls m(p: Extern<R>), more specific than Any; 1 will be converted
 ```
 
-##### Dynamic operations
+##### Dynamic operations <span id="typing-dynamic-operations"></span>
 
 For a value `e: Extern<T>`, dynamic field accesses, dynamic index accesses, and dynamic calls have type `Extern<T>`, while dynamic updates have type `Unit`.
 
@@ -394,11 +394,11 @@ e.f(p: 1)                // type error: named arguments are rejected
 e.f(inout x)             // type error: inout arguments are rejected
 ```
 
-#### 3.2.2 Desugaring after SEMA
+#### 3.2.2 Translation to `ForeignRuntime` calls <span id="322-translation-to-foreignruntime-calls"></span>
 
-##### Implicit conversion to `Extern<T>` <span id="implicit-conversion-to-externt"></span>
+##### Implicit conversions <span id="translation-implicit-conversions"></span>
 
-When `Extern<T>` is expected, an expression `exp` of type `U` becomes `T.toExtern<U>(exp)` if `U` is neither `Extern<T>` nor `Nothing`. The contexts where such a conversion is inserted are listed under [Implicit conversion](#implicit-conversion).
+When `Extern<T>` is expected, an expression `exp` of type `U` becomes `T.toExtern<U>(exp)` if `U` is neither `Extern<T>` nor `Nothing`. The contexts where such a conversion is inserted are listed under [Implicit conversions](#typing-implicit-conversions).
 
 Examples:
 Assume `cjexp` has type `U` with `U != Extern<T>`. Then:
@@ -423,7 +423,7 @@ let b: Extern<R> = [x, 12]
 // let b: Extern<R> = R.toExtern<Array<Int64>>([x, 12])
 ```
 
-##### Dynamic Extern expression desugaring
+##### Dynamic operations <span id="translation-dynamic-operations"></span>
 
 The desugaring of `Extern` expressions is performed according to the `DESUGAR` function defined below, where `~>` means "is defined as". Each dynamic operation becomes a direct static call to the corresponding `ForeignRuntime<T>` function.
 
@@ -458,7 +458,7 @@ DESUGAR(exp) ~> // otherwise, preserve structure and desugar subexpressions
 
 For non-`Extern` Cangjie expressions, `MAP(DESUGAR, exp)` preserves the outer expression and desugars its subexpressions..
 
-The compound-assignment rules are discussed in detail in [Section 3.2.3, Compound Assignment](#compound-assignment). Here `"op"` denotes the operator name without `=` (e.g. `"+"` for `+=`), and the temporaries are fresh names.
+The compound-assignment rules are discussed in detail in [Compound assignment](#compound-assignment), section 3.2.3. Here `"op"` denotes the operator name without `=` (e.g. `"+"` for `+=`), and the temporaries are fresh names.
 
 The generated calls follow standard Cangjie evaluation order. Compound-assignment expansions use temporaries so that the receiver and index are evaluated only once.
 
@@ -545,17 +545,17 @@ DESUGAR(e1.a.b(e2.c, e3[0], n + 1)) ~>
     )
 ```
 
-#### 3.2.3 Other forms of assignment
+#### 3.2.3 Compound and multiple assignment <span id="323-compound-and-multiple-assignment"></span>
 
-##### Multiple Assignment Expression <span id="multiple-assignment-expression"></span>
+##### Multiple assignment <span id="multiple-assignment"></span>
 
 Multiple assignment of the form `(x1, ..., x3) = ...` remains consistent with the current specification/implementation. This occurs naturally because the desugaring of multiple assignment occurs before the desugaring of Extern.
 
-##### Compound Assignment <span id="compound-assignment"></span>
+##### Compound assignment <span id="compound-assignment"></span>
 
 Compound assignment to a dynamic member or index needs an explicit read/call/write expansion. We desugar compound assignments as follows, depending on the shape of the left-hand side expression. Each result has type `Unit`; the receiver and index are evaluated only once, and the right-hand side is passed without an implicit `toExtern` conversion.
 
-###### Case 1
+###### Extern variable or field (`lhs op= v`)
 
 Let `lhs: Extern<T>` be a mutable variable, or a non-dynamic extern operation of type `Extern<T>` (e.g. `foo.f1.e2` of type `Extern<T>`, where `foo` and `foo.f1` are not of non-Extern type) and `cjexp` of any type, then:
 
@@ -571,7 +571,7 @@ lhs = T.functionCall(T.memberAccess(lhs', "+"), [cjexp])
 
 ``lhs'`` above represents a reference to the expression ``x'``. Compiler already has support for this.
 
-###### Case 2
+###### Dynamic member (`e.f op= v`) <span id="compound-assignment-dynamic-member"></span>
 
 Let `e1: Extern<T>` then:
 
@@ -587,7 +587,7 @@ let tmp2 = T.memberAccess(T.memberAccess(tmp1, "foo"), "+")
 T.memberUpdate(tmp1, "foo", T.functionCall(tmp2, [exp]))
 ```
 
-###### Case 3
+###### Dynamic index (`e[i] op= v`) <span id="compound-assignment-dynamic-index"></span>
 
 Let `e1: Extern<T>` then:
 
@@ -923,7 +923,7 @@ Changes:
 
 ##### Compound assignment of a dynamic member or index
 
-For `e.f op= v` or `e[i] op= v` with `e: Extern<T>`, `BuildCompoundAssignment` in [ExternDesugaring.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/Desugar/AfterTypeCheck/ExternDesugaring.cpp) creates the `Unit` block of [Compound Assignment](#compound-assignment), cases 2 and 3, with `BuildMemberCompoundUpdate`, `BuildIndexedCompoundUpdate` and `CreateCompoundOpCall`.
+For `e.f op= v` or `e[i] op= v` with `e: Extern<T>`, `BuildCompoundAssignment` in [ExternDesugaring.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/Desugar/AfterTypeCheck/ExternDesugaring.cpp) creates the `Unit` block of [Compound assignment](#compound-assignment), cases [dynamic member](#compound-assignment-dynamic-member) and [dynamic index](#compound-assignment-dynamic-index), with `BuildMemberCompoundUpdate`, `BuildIndexedCompoundUpdate` and `CreateCompoundOpCall`.
 
 ### 4.3. Helpers
 
@@ -1088,7 +1088,7 @@ Examples, with `e: Extern<R>` and `f` a function:
 
 ### A.5. Desugaring <span id="appendix-a5"></span>
 
-At the desugaring stage the remaining operations `(U)e` are not ambiguous anymore and can be desugared as `T.fromExtern<U>(DESUGAR(e))`, for `e: Extern<T>` and `T <: ForeignRuntime<T>`. Note that expressions `e` needs to be desugared, e.g. it can be of the form `e1.foo`. This adds one rule to the `DESUGAR` function of [section 3.2.2](#322-desugaring-after-sema):
+At the desugaring stage the remaining operations `(U)e` are not ambiguous anymore and can be desugared as `T.fromExtern<U>(DESUGAR(e))`, for `e: Extern<T>` and `T <: ForeignRuntime<T>`. Note that expressions `e` needs to be desugared, e.g. it can be of the form `e1.foo`. This adds one rule to the `DESUGAR` function of [section 3.2.2](#322-translation-to-foreignruntime-calls):
 
 ```cangjie
 DESUGAR((U)exp) ~>
