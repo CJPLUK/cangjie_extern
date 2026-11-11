@@ -696,6 +696,9 @@ bool TypeChecker::TypeCheckerImpl::ChkWithExternConversion(ASTContext& ctx, Ty& 
 }
 ```
 
+<details>
+<summary>How <code>ChkWithExternConversion</code> works</summary>
+
 The function types the expression on its own, rejects it if that type is unusable, and then applies one rule with
 three cases.
 
@@ -730,11 +733,18 @@ such as the `R'` in `Extern<R'>`. The three remaining checks are applied in orde
    value, for example `e: Extern<RT>`. The subtype check succeeds only if `R'` can be `RT`, and it records that as a
    constraint for the solver. Values of type `Extern<T>` are the only way to determine the runtime.
 
+</details>
+<br>
+
+
 **Correspondence with the solver.** During type argument inference, the constraint solver also accepts an argument
 where its parameter type contains `Extern<T>`, through `AcceptsExternConversion` in
 [`src/Sema/LocalTypeArgumentSynthesis.cpp`](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/LocalTypeArgumentSynthesis.cpp).
 The two must agree: inference may re-check an argument against its parameter type while some type variables are
 still unsolved, and the base compiler assumes that this check succeeds when unification did.
+
+<details>
+<summary>How the solver accepts conversions</summary>
 
 The solver change is small. The argument pack gets a flag `externConversion`, set only while the arguments of a call
 are matched against its parameters. `UnifyOne` then treats `argTy <: paramTy` as holding without constraints if one
@@ -745,6 +755,8 @@ side accepts the other by conversion, where neither `Nothing` nor a type with pl
 
 The flag is off for the return type and for matching the bounds of a type variable against each other, where no value
 is converted.
+
+</details>
 
 #### 4.1.3. Dynamic operations
 
