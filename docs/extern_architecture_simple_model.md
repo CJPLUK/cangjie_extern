@@ -142,7 +142,7 @@ flowchart TB
 | --- | --- |
 | `cangjie_runtime` - std.core | (1) New file [`extern_runtime.cj`](https://github.com/CJPLUK/cangjie_runtime/compare/469f9ebc73959d3eb8d2b79b424aeceaf492bb94...feature_extern_simple_model#diff-515353015ae80d6a51e0732df3b0e55484e5d9beb4708440b17be668f06d370e) in `std.core` with `Extern<T>` struct, `ForeignRuntime<T>` interface, new exceptions, and documentation about new public declarations. Details in section [3.1. Standard library (`std.core`)](#31-standard-library-stdcore): [`Extern<T>` struct](#externt-struct), [`ForeignRuntime<T>` interface](#foreignruntimet-interface), [exceptions](#exception-hierarchy-all-in-stdcore). |
 | `cangjie_compiler` - Sema | (2) Type checking of Extern expressions and annotate Extern expression that need desugaring. Typing rules in section [3.2.1. Typing rules](#321-typing-rules). Implementation details in [4.1. Type checking](#41-type-checking). |
-| `cangjie_compiler` - Desugar After Sema | (3) Additional pass to desugar annotated Extern expressions. Desugaring rules in section [3.2.2. Translation to `ForeignRuntime` calls](#322-translation-to-foreignruntime-calls). Implementation details in [4.2. Desugaring](#42-desugaring). |
+| `cangjie_compiler` - Desugar After Sema | (3) Additional pass to desugar annotated Extern expressions. Desugaring rules in section [3.2.2. Translation to `ForeignRuntime` calls](#322-translation-to-foreignruntime-calls). Implementation details in [4.3. Extern desugaring pass](#43-extern-desugaring-pass). |
 | `cangjie_compiler` - CHIR | (4) Dereference mapped call arguments, needed for compound assignment `x.f op= v` of a field `x.f: Extern<T>`. Details in [Compound assignment of an Extern variable or field](#compound-assignment-of-an-extern-variable-or-field). |
 | `cangjie_tools` | Consequence of (1). Some LSP tests golden files need to be updated because of additional new public declarations in std.core. See golden files diffs in [GitCode PR](https://gitcode.com/Cangjie/cangjie_tools/pull/1355/diffs). |
 
@@ -630,9 +630,9 @@ Stages after CHIR are unchanged.
 
 The section is organized as follows:
 - [4.1. Type checking](#41-type-checking): the Sema changes.
-- [4.2. Desugaring](#42-desugaring): the new `DesugarExtern` pass and the ASTs it generates.
-- [4.3. Helpers](#43-helpers): functions shared by Sema and `DesugarExtern`.
-- [4.4. Desugaring of `getExtern` and `setExtern`](#44-desugaring-of-getextern-and-setextern): how the intrinsic functions `getExtern(e)` and `setExtern(e, v)` are desugared into accesses of the payload field.
+- [4.2. Desugaring of `getExtern` and `setExtern`](#42-desugaring-of-getextern-and-setextern): how the intrinsic functions `getExtern(e)` and `setExtern(e, v)` are desugared into accesses of the payload field.
+- [4.3. Extern desugaring pass](#43-extern-desugaring-pass): the new `DesugarExtern` pass and the ASTs it generates.
+- [4.4. Helpers](#44-helpers): functions shared by Sema and `DesugarExtern`.
 
 ### 4.1. Type checking
 
@@ -809,7 +809,7 @@ No other change is needed for:
 - **Operators.** `e1 + e2` and `-e` are already rewritten into `e1.+(e2)` and `e.-()`, which are dynamic calls of type `Extern<T>`. Comparisons too: `e1 < e2` and `e1 == e2` become `e1.<(e2)` and `e1.==(e2)`, of type `Extern<T>`, so they cannot be the condition of an `if`: they are not `Bool`.
 - **A multiple assignment `(e.x, b) = (1, 2)`,** which becomes one dynamic update per element.
 
-One change is needed for the **pipeline `x |> e`**, which is desugared during type checking into `e(x)`. `TryDesugarFunctionCallExpr` in [DesugarInTypeCheck.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/Desugar/DesugarInTypeCheck.cpp) rewrites a callee that is not a function into `e.()`, the operator `()`. It leaves an `Extern<T>` value (`IsExternValue`, section 4.3) unchanged, so `x |> e` is the dynamic call `e(x)` rather than a call of the dynamic member access `e.()`.
+One change is needed for the **pipeline `x |> e`**, which is desugared during type checking into `e(x)`. `TryDesugarFunctionCallExpr` in [DesugarInTypeCheck.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/Desugar/DesugarInTypeCheck.cpp) rewrites a callee that is not a function into `e.()`, the operator `()`. It leaves an `Extern<T>` value (`IsExternValue`, section 4.4) unchanged, so `x |> e` is the dynamic call `e(x)` rather than a call of the dynamic member access `e.()`.
 
 </details>
 
@@ -818,24 +818,35 @@ One change is needed for the **pipeline `x |> e`**, which is desugared during ty
 `CheckConstEvaluation` runs among the checks after Sema, before `DesugarExtern` inserts the `toExtern` calls and the runtime calls, so it cannot see them. Instead, `ConstEvaluationChecker` in [ConstEvaluationChecker.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/ConstEvaluationChecker.cpp) finds the nodes that `DesugarExtern` will rewrite, using the same tests on the typed AST, and reports them as errors.
 
 <details>
-<summary>How dynamic operations and implicit conversions are detected</summary>
+<summary>Details</summary>
 
-- **Dynamic operations.** `ChkExpr` reports `sema_extern_operation_in_const` and fails, before the usual check, when `IsDynamicExternOperation` (section 4.3) holds, the test that `DesugarExtern` also uses to find the operations it rewrites.
-- **Implicit conversions.** A converted value keeps its own type, so a conversion is found by comparing a value with the type expected for it. `ChkNoExternConversion(value, expected)` reports `sema_extern_conversion_in_const` when `NeedExternConversion` (section 4.3) holds, the test that `DesugarExtern` also uses: `expected` is `Extern<T>` and the type of `value` is not a subtype of it. So `Extern<A>` used where `Extern<B>` is expected is a conversion.
+- **Dynamic operations.** `ChkExpr` reports `sema_extern_operation_in_const` and fails, before the usual check, when `IsDynamicExternOperation` (section 4.4) holds, the test that `DesugarExtern` also uses to find the operations it rewrites.
+- **Implicit conversions.** A converted value keeps its own type, so a conversion is found by comparing a value with the type expected for it. `ChkNoExternConversion(value, expected)` reports `sema_extern_conversion_in_const` when `NeedExternConversion` (section 4.4) holds, the test that `DesugarExtern` also uses: `expected` is `Extern<T>` and the type of `value` is not a subtype of it. So `Extern<A>` used where `Extern<B>` is expected is a conversion.
 
 </details>
 
-### 4.2. Desugaring
+### 4.2. Desugaring of `getExtern` and `setExtern`
 
-#### 4.2.1. The pass
+In `std.core`, Sema would type `this.payload` as a dynamic member access, so `Extern<T>` uses the intrinsics `getExtern` and `setExtern` instead. After Sema, `DesugarIntrinsicCallExpr` in [CallExpr.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/Desugar/AfterTypeCheck/CallExpr.cpp) recognizes the two `std.core` intrinsics by name and calls `DesugarExternPayloadIntrinsic`, which sets the `desugarExpr` of the call:
 
-New file [ExternDesugaring.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/Desugar/AfterTypeCheck/ExternDesugaring.cpp):
+| Call | Desugared | Type |
+|---|---|---|
+| `getExtern(e)` | `e.payload` | `Any` |
+| `setExtern(e, v)` | `e.payload = v`, with `e.payload` marked `LEFT_VALUE` | `Unit` |
+
+The member access is created with `CreateMemberAccess`, which binds its `target` to the `payload` declaration of `Extern<T>`. `IsDynamicExternMemberAccess` and `IsDynamicExternUpdate` ([section 4.4](#44-helpers)) only match member accesses without a target, so `DesugarExtern`, which runs later in the same stage ([section 4.3.1](#431-the-pass)), leaves these accesses unchanged. The translation to CHIR then handles them as ordinary struct field reads and writes. No new intrinsic kind is added to CHIR.
+
+### 4.3. Extern desugaring pass
+
+#### 4.3.1. The pass
+
+New file [ExternDesugaring.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/Desugar/AfterTypeCheck/ExternDesugaring.cpp) declares entry function:
 
 ```cpp
 void TypeCheckerImpl::DesugarExtern(ASTContext& ctx, Package& pkg);
 ```
 
-It is called in `PerformDesugarAfterSema` in [AfterTypeCheck.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/Desugar/AfterTypeCheck.cpp):
+which is called from `PerformDesugarAfterSema` in [AfterTypeCheck.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/Desugar/AfterTypeCheck.cpp):
 
 ```cpp
 for (auto& pkg : pkgs) {
@@ -851,7 +862,7 @@ for (auto& pkg : pkgs) {
 
 | # | Pass | Before | After |
 |---|---|---|---|
-| 1 | `PerformDesugarAfterTypeCheck`: interop, declarations, and per-node rewrites such as `is`/`as`, ranges, string interpolation, intrinsic calls including `getExtern`/`setExtern` ([4.4](#44-desugaring-of-getextern-and-setextern)) | `e is T` | `match (e) { case _: T => true case _ => false }` |
+| 1 | `PerformDesugarAfterTypeCheck`: interop, declarations, and per-node rewrites such as `is`/`as`, ranges, string interpolation, intrinsic calls including `getExtern`/`setExtern` ([4.2](#42-desugaring-of-getextern-and-setextern)) | `e is T` | `match (e) { case _: T => true case _ => false }` |
 | 2 | `TryDesugarForCoalescing` | `opt ?? 11` | `match (opt) { case Some(x) => x case None => 11 }` |
 | 3 | `DesugarExtern` **(new)** | `let e: Extern<RT> = 1` | `let e: Extern<RT> = RT.toExtern<Int64>(1)` |
 | 4 | `AutoBoxing::AddOptionBox` | `let o: ?Int64 = 1` | `let o: ?Int64 = Some(1)` |
@@ -860,19 +871,19 @@ for (auto& pkg : pkgs) {
 
 ```text
 visit(node):
-    if node is a dynamic expression:                 // section 4.2.3
+    if node is a dynamic expression:                 // section 4.3.3
         node.desugarExpr = direct runtime call or compound-assignment expansion
         visit(node.desugarExpr)                      // the cloned operands get desugared here
         skip the children of node                    // these are not used anymore, replaced by node.desugarExpr
     else:
-        if node expects Extern<T> for a value e: U:   // section 4.2.2
+        if node expects Extern<T> for a value e: U:   // section 4.3.2
             e.desugarExpr = T.toExtern<U>(e)
         visit the children of node
 ```
 
 `visit` is the pre-visit callback of the AST `Walker`, called on the package and on every node it reaches.
 
-#### 4.2.2. Implicit conversions
+#### 4.3.2. Implicit conversions
 
 The pass converts a value `e: U` wherever `Extern<T>` is expected in the following cases:
 
@@ -892,9 +903,9 @@ if NeedExternConversion(U, Extern<T>):
     e.ty          = Extern<T>
 ```
 
-#### 4.2.3. Dynamic operations
+#### 4.3.3. Dynamic operations
 
-A dynamic node is one of the expressions recognized by the `IsDynamicExtern*` predicates ([section 4.3](#43-helpers)). It becomes a direct static call to the corresponding `ForeignRuntime<T>` function. For example, `e.a.b(1)` becomes `T.functionCall(T.memberAccess(T.memberAccess(e, "a"), "b"), [1])`.
+A dynamic node is one of the expressions recognized by the `IsDynamicExtern*` predicates ([section 4.4](#44-helpers)). It becomes a direct static call to the corresponding `ForeignRuntime<T>` function. For example, `e.a.b(1)` becomes `T.functionCall(T.memberAccess(T.memberAccess(e, "a"), "b"), [1])`.
 
 ##### Rewriting dynamic nodes
 
@@ -947,7 +958,7 @@ Changes:
 
 For `e.f op= v` or `e[i] op= v` with `e: Extern<T>`, `BuildCompoundAssignment` in [ExternDesugaring.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/Desugar/AfterTypeCheck/ExternDesugaring.cpp) creates the `Unit` block of [Compound assignment](#compound-assignment), cases [dynamic member](#compound-assignment-dynamic-member) and [dynamic index](#compound-assignment-dynamic-index), with `BuildMemberCompoundUpdate`, `BuildIndexedCompoundUpdate` and `CreateCompoundOpCall`.
 
-### 4.3. Helpers
+### 4.4. Helpers
 
 - `Ty::IsCoreExternType()` in [Types.h](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_include/cangjie/AST/Types.h) / [Types.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/AST/Types.cpp): a struct of the core package named `Extern` with one type argument. It uses the new constants `STD_LIB_EXTERN` and `STD_LIB_FOREIGN_RUNTIME` from [ConstantsUtils.h](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_include/cangjie/Utils/ConstantsUtils.h).
 
@@ -977,17 +988,6 @@ For `e.f op= v` or `e[i] op= v` with `e: Extern<T>`, `BuildCompoundAssignment` i
   // expr is one of the above and has no desugarExpr yet; used by DesugarExtern and the const checker
   bool IsDynamicExternOperation(const Expr& expr);
   ```
-
-### 4.4. Desugaring of `getExtern` and `setExtern`
-
-In `std.core`, Sema would type `this.payload` as a dynamic member access, so `Extern<T>` uses the intrinsics `getExtern` and `setExtern` instead. After Sema, `DesugarIntrinsicCallExpr` in [CallExpr.cpp](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/Desugar/AfterTypeCheck/CallExpr.cpp) recognizes the two `std.core` intrinsics by name and calls `DesugarExternPayloadIntrinsic`, which sets the `desugarExpr` of the call:
-
-| Call | Desugared | Type |
-|---|---|---|
-| `getExtern(e)` | `e.payload` | `Any` |
-| `setExtern(e, v)` | `e.payload = v`, with `e.payload` marked `LEFT_VALUE` | `Unit` |
-
-The member access is created with `CreateMemberAccess`, which binds its `target` to the `payload` declaration of `Extern<T>`. `IsDynamicExternMemberAccess` and `IsDynamicExternUpdate` ([section 4.3](#43-helpers)) only match member accesses without a target, so `DesugarExtern`, which runs later in the same stage ([section 4.2.1](#421-the-pass)), leaves these accesses unchanged. The translation to CHIR then handles them as ordinary struct field reads and writes. No new intrinsic kind is added to CHIR.
 
 ---
 
@@ -1123,7 +1123,7 @@ and one rewrite to the table of [section 4](#4-detailed-implementation-plan):
 |---|---|---|
 | Forced cast | `(U)e` with `e: Extern<T>` | `T.fromExtern<U>(DESUGAR(e))` |
 
-In the `DesugarExtern` pass of [section 4.2.1](#421-the-pass), the forced cast is handled by a first branch of `visit`, before the dynamic expressions:
+In the `DesugarExtern` pass of [section 4.3.1](#431-the-pass), the forced cast is handled by a first branch of `visit`, before the dynamic expressions:
 
 ```text
 visit(node):
