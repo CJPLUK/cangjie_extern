@@ -156,16 +156,18 @@ Consider the following a motivational example for this section.
 
 ```cangjie
 // vm: Extern<T>, T <: ForeignRuntime
+let two        : Extern<T> = 2
 let calculator : Extern<T> = vm.calculator
-let sum        : Extern<T> = calculator.add(2, 3.5)
+let sum        : Extern<T> = calculator.add(two, 3.5)
 let result     : Float64   = T.fromExtern<Float64>(sum)
 ```
 
 During compilation, the example above is desugared as follows.
 
 ```cangjie
+let two        : Extern<T> = T.toExtern(2)
 let calculator : Extern<T> = T.memberAccess(vm, "calculator")
-let sum        : Extern<T> = T.functionCall(T.memberAccess(calculator, "add"), [2, 3.5])
+let sum        : Extern<T> = T.functionCall(T.memberAccess(calculator, "add"), [two, 3.5])
 let result     : Float64   = T.fromExtern<Float64>(sum)
 ```
 
