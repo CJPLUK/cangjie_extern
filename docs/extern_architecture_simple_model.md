@@ -141,7 +141,7 @@ flowchart TB
 | Component | Role |
 | --- | --- |
 | `cangjie_runtime` - std.core | (1) New file [`extern_runtime.cj`](https://github.com/CJPLUK/cangjie_runtime/compare/469f9ebc73959d3eb8d2b79b424aeceaf492bb94...feature_extern_simple_model#diff-515353015ae80d6a51e0732df3b0e55484e5d9beb4708440b17be668f06d370e) in `std.core` with `Extern<T>` struct, `ForeignRuntime<T>` interface, new exceptions, and documentation about new public declarations. Details in section [3.1. Standard library (`std.core`)](#31-standard-library-stdcore): [`Extern<T>` struct](#externt-struct), [`ForeignRuntime<T>` interface](#foreignruntimet-interface), [exceptions](#exception-hierarchy-all-in-stdcore). |
-| `cangjie_compiler` - Sema | (2) Type checking of Extern expressions and annotate Extern expression that need desugaring. Typing rules in section [3.2.1. Typing rules](#321-typing-rules). Implementation details in [4.1. Type checking](#41-type-checking). |
+| `cangjie_compiler` - Sema | (2) Type checking of Extern expressions and annotate Extern expression that need desugaring. Typing rules in section [3.2.1. Typing rules](#321-typing-rules). Implementation details in [4.1. Sema](#41-sema). |
 | `cangjie_compiler` - Desugar After Sema | (3) Additional pass to desugar annotated Extern expressions. Desugaring rules in section [3.2.2. Translation to `ForeignRuntime` calls](#322-translation-to-foreignruntime-calls). Implementation details in [4.3. Extern desugaring pass](#43-extern-desugaring-pass). |
 | `cangjie_compiler` - CHIR | (4) Dereference mapped call arguments, needed for compound assignment `x.f op= v` of a field `x.f: Extern<T>`. Details in [Compound assignment of an Extern variable or field](#compound-assignment-of-an-extern-variable-or-field). |
 | `cangjie_tools` | Consequence of (1). Some LSP tests golden files need to be updated because of additional new public declarations in std.core. See golden files diffs in [GitCode PR](https://gitcode.com/Cangjie/cangjie_tools/pull/1355/diffs). |
@@ -629,12 +629,12 @@ The only changes in CHIR are in the translation of mapped values needed by compo
 Stages after CHIR are unchanged.
 
 The section is organized as follows:
-- [4.1. Type checking](#41-type-checking): the Sema changes.
+- [4.1. Sema](#41-sema): the type checking changes.
 - [4.2. Desugaring of `getExtern` and `setExtern`](#42-desugaring-of-getextern-and-setextern): how the intrinsic functions `getExtern(e)` and `setExtern(e, v)` are desugared into accesses of the payload field.
 - [4.3. Extern desugaring pass](#43-extern-desugaring-pass): the new `DesugarExtern` pass and the ASTs it generates.
 - [4.4. Helpers](#44-helpers): functions shared by Sema and `DesugarExtern`.
 
-### 4.1. Type checking
+### 4.1. Sema
 
 #### 4.1.1. `Extern` cannot be extended
 
