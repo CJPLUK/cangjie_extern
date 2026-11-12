@@ -737,7 +737,7 @@ such as the `R'` in `Extern<R'>`. The three remaining checks are applied in orde
 <br>
 
 
-**Correspondence with the solver.** During type argument inference, the constraint solver also accepts an argument
+**Correspondence with type-argument inference solver for generic calls.** During type argument inference, the constraint solver also accepts an argument
 where its parameter type contains `Extern<T>`, through `AcceptsExternConversion` in
 [`src/Sema/LocalTypeArgumentSynthesis.cpp`](https://gitcode.com/Cangjie/cangjie_compiler/pull/2317/diffs#mr_src/Sema/LocalTypeArgumentSynthesis.cpp).
 The two must agree: inference may re-check an argument against its parameter type while some type variables are
